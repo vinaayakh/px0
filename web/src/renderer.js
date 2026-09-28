@@ -297,7 +297,8 @@ export function rowFor(line) {
 }
 
 export function ensureChunks(d, first, last) {
-  const c0 = Math.floor(first / CHUNK), c1 = Math.floor(Math.max(first, last - 1) / CHUNK);
+  if (d.virtual) return; // a non-file tab (virtualtab.js) has no lines to fetch
+  const c0 =Math.floor(first / CHUNK), c1 = Math.floor(Math.max(first, last - 1) / CHUNK);
   for (let c = c0; c <= c1; c++) {
     if (d.chunks.has(c) || d.pending.has(c)) continue;
     d.pending.add(c);
