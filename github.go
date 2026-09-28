@@ -84,9 +84,8 @@ func (g *GitHubProvider) ListPRs(ctx context.Context, token, query string) ([]PR
 	return nil, errProviderUnsupported
 }
 
-// FetchConversation is implemented with the Conversation tab (M2).
 func (g *GitHubProvider) FetchConversation(ctx context.Context, target PRTarget, token string) (PRConversation, error) {
-	return PRConversation{}, errProviderUnsupported
+	return fetchConversation(ctx, target.Owner, target.Repo, target.Number, token)
 }
 
 const githubGraphQLURL = githubAPIBase + "/graphql"

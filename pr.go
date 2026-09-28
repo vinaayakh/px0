@@ -45,6 +45,7 @@ type prSession struct {
 	nextID   int64
 
 	review *reviewState // AI review runs (review.go)
+	conv   *convCache   // last Conversation tab fetch (conversation.go)
 }
 
 // ErrPRMergedCancelled is returned when opening an already-merged PR is cancelled.

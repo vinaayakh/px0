@@ -57,6 +57,7 @@ export async function refreshPRMeta() {
   }
   await refreshExistingComments();
   await refreshComments();
+  emit('pr:refreshed');
 }
 
 function fmtTime(iso) {

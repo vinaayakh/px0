@@ -35,7 +35,7 @@ type GitProvider interface {
 }
 ```
 
-`ListPRs` (PR inbox) and `FetchConversation` (Conversation tab) are declared with their types but return `errProviderUnsupported` until those features land.
+`FetchConversation` feeds the Conversation tab ([conversation.md](conversation.md)). `ListPRs` (PR inbox) is declared with its types but returns `errProviderUnsupported` until the inbox lands.
 
 ### Data Models
 - **`PRTarget`**: Normalized identifier containing `Provider`, `Owner`, `Repo`, `Number`, and original `URL`.
@@ -151,7 +151,7 @@ func gitMergeBase(root, a, b string) string
 
 Each draft carries an `origin` (`human`, or `ai` for a suggestion from AI review) and a `status` (`pending`, `accepted`, `edited`, `dismissed`). A human draft is created `accepted`; a suggestion starts `pending` and only the reviewer's accept or edit makes it submittable. An empty status (a draft restored from an older session file) counts as accepted. `draftCount` in `/api/pr/meta` counts submittable drafts only. Optional fields: `startLine` for a multi-line range, `subjectType: "file"` for a comment on the whole file, `runId` and `fingerprint` for AI suggestions.
 
-### Batch Apply with Coding Agents (`⚡ Batch Apply`)
+### Batch Apply with Coding Agents (`âš¡ Batch Apply`)
 Users can delegate all drafted PR comments directly to an AI coding agent (Claude Code, Gemini CLI, Cursor Agent, Antigravity, etc.). The agent harness receives the comments as targeted editing instructions and modifies the worktree files directly.
 
 ### Formal Review Submission
@@ -163,30 +163,30 @@ Users can delegate all drafted PR comments directly to an AI coding agent (Claud
 
 ## 7. Committing and Pushing Back to the PR
 
-A PR checkout is process-scoped (§1) but not read-only: the sidebar git panel ([Git Awareness §9](git-integration.md)) works inside it, with `prSession.Pull` and `prSession.Push` (`pr.go`) replacing the plain-workspace fast-forward/push logic when `s.pr != nil` (`server.go`'s `handleGitPull`/`handleGitPush`).
+A PR checkout is process-scoped (Â§1) but not read-only: the sidebar git panel ([Git Awareness Â§9](git-integration.md)) works inside it, with `prSession.Pull` and `prSession.Push` (`pr.go`) replacing the plain-workspace fast-forward/push logic when `s.pr != nil` (`server.go`'s `handleGitPull`/`handleGitPush`).
 
 ### Why the Checkout Needs Its Own Push/Pull
 
-The worktree `checkoutPR` produces sits on a **detached** `HEAD` at `refs/px0/pr/<N>` (§3) — not the PR's branch name, and (in the worktree case) `origin` points at the *base* repository, which for a fork PR is not where the PR's commits live. A bare `git push`/`git pull` would either push nowhere useful or fail outright, so both operations are reimplemented against the PR's actual metadata instead of the checkout's local remote config.
+The worktree `checkoutPR` produces sits on a **detached** `HEAD` at `refs/px0/pr/<N>` (Â§3) â€” not the PR's branch name, and (in the worktree case) `origin` points at the *base* repository, which for a fork PR is not where the PR's commits live. A bare `git push`/`git pull` would either push nowhere useful or fail outright, so both operations are reimplemented against the PR's actual metadata instead of the checkout's local remote config.
 
 ### `prSession.Pull`: Fast-Forward Only, Same as Everywhere Else
 
-1. Refuses immediately if `gitHasUncommittedChanges(worktree)` — nothing here stashes.
+1. Refuses immediately if `gitHasUncommittedChanges(worktree)` â€” nothing here stashes.
 2. Re-fetches the PR head: `git fetch origin refs/pull/<N>/head:refs/px0/pr/<N>` in the worktree case (shared refs with `srcRepo`, same as the initial checkout), or a direct fetch of `meta.HeadRepoCloneURL`/`meta.HeadRef` into `FETCH_HEAD` in the bare-clone case.
-3. `git merge-base --is-ancestor <newRef> HEAD` — if the fetched ref is already an ancestor of the current checkout, it's a no-op ("already up to date"), not an error.
-4. `git merge-base --is-ancestor HEAD <newRef>` — if the current checkout is a clean ancestor of the fetched ref, `git reset --hard <newRef>` fast-forwards it (safe: step 1 already guaranteed a clean working tree).
-5. Otherwise — a local commit the PR head doesn't have, or a force-pushed head that isn't a fast-forward at all — `errPRDiverged` refuses the pull. Exactly like the plain-workspace path, this never invokes `git merge`, so there is never a real conflict to clean up.
-6. On a successful fast-forward, `p.meta.HeadSHA` and `p.diffBase`/`p.diffBaseWarning` are recomputed via the same `computeDiffBase` helper `checkoutPR` uses, and `handleGitPull` propagates the new `diffBase` to `s.diffBase`/`ix.SetDiffBase()` so `/api/diff`, `/api/gutter`, and the tree's status-against-base all pick it up immediately. The frontend (`gitpanel.js`) follows a successful pull with a full `reindexWorkspace()` plus `pr.js`'s `refreshPRMeta()` — a fresh `/api/pr/meta` fetch, a `renderBar()`, and a re-fetch of existing comments — so the PR bar, diff warning, and comment threads all reflect the new head, not the one captured at session start.
+3. `git merge-base --is-ancestor <newRef> HEAD` â€” if the fetched ref is already an ancestor of the current checkout, it's a no-op ("already up to date"), not an error.
+4. `git merge-base --is-ancestor HEAD <newRef>` â€” if the current checkout is a clean ancestor of the fetched ref, `git reset --hard <newRef>` fast-forwards it (safe: step 1 already guaranteed a clean working tree).
+5. Otherwise â€” a local commit the PR head doesn't have, or a force-pushed head that isn't a fast-forward at all â€” `errPRDiverged` refuses the pull. Exactly like the plain-workspace path, this never invokes `git merge`, so there is never a real conflict to clean up.
+6. On a successful fast-forward, `p.meta.HeadSHA` and `p.diffBase`/`p.diffBaseWarning` are recomputed via the same `computeDiffBase` helper `checkoutPR` uses, and `handleGitPull` propagates the new `diffBase` to `s.diffBase`/`ix.SetDiffBase()` so `/api/diff`, `/api/gutter`, and the tree's status-against-base all pick it up immediately. The frontend (`gitpanel.js`) follows a successful pull with a full `reindexWorkspace()` plus `pr.js`'s `refreshPRMeta()` â€” a fresh `/api/pr/meta` fetch, a `renderBar()`, and a re-fetch of existing comments â€” so the PR bar, diff warning, and comment threads all reflect the new head, not the one captured at session start.
 
 ### `prSession.Push`: Straight to the PR's Own Branch
 
-`git -C worktree push <meta.HeadRepoCloneURL> HEAD:refs/heads/<meta.HeadRef>` — pushing a URL directly rather than a named remote sidesteps any ambiguity between `origin` (the base repo) and the PR's actual head repo (a fork, in the common case). It is never forced: if the PR head has moved since this checkout (or the last successful Pull), the remote rejects the push as non-fast-forward and that rejection surfaces to the user verbatim, exactly as it would from a terminal.
+`git -C worktree push <meta.HeadRepoCloneURL> HEAD:refs/heads/<meta.HeadRef>` â€” pushing a URL directly rather than a named remote sidesteps any ambiguity between `origin` (the base repo) and the PR's actual head repo (a fork, in the common case). It is never forced: if the PR head has moved since this checkout (or the last successful Pull), the remote rejects the push as non-fast-forward and that rejection surfaces to the user verbatim, exactly as it would from a terminal.
 
-Unlike a formal review submission, Push is not gated on `p.writeAccess` — that field reflects push access to the *base* repository (checked for `APPROVE`/`REQUEST_CHANGES`, §4), which is a different permission than push access to the head repository. Push is always attempted; a permission failure surfaces as git's own rejection rather than a pre-emptive block.
+Unlike a formal review submission, Push is not gated on `p.writeAccess` â€” that field reflects push access to the *base* repository (checked for `APPROVE`/`REQUEST_CHANGES`, Â§4), which is a different permission than push access to the head repository. Push is always attempted; a permission failure surfaces as git's own rejection rather than a pre-emptive block.
 
 ### Why This Matters for the Checkout's Lifetime
 
-`prSession.Close` (§1) force-removes the worktree and deletes `refs/px0/pr/<N>`/`refs/px0/base/<N>` when the process exits, with no warning if there are uncommitted or unpushed commits sitting in it. Push is the only way work done in a PR checkout survives past the session — the git panel exists in PR review specifically so that loop (edit, commit, push) never requires dropping out to a terminal mid-review.
+`prSession.Close` (Â§1) force-removes the worktree and deletes `refs/px0/pr/<N>`/`refs/px0/base/<N>` when the process exits, with no warning if there are uncommitted or unpushed commits sitting in it. Push is the only way work done in a PR checkout survives past the session â€” the git panel exists in PR review specifically so that loop (edit, commit, push) never requires dropping out to a terminal mid-review.
 
 ---
 
@@ -198,9 +198,9 @@ Unlike a formal review submission, Push is not gated on `p.writeAccess` — that
 - **PR Header Bar (`web/src/pr.js`)**:
   - Renders PR number, title, author, branch refs, and draft count badge.
   - Toggles `#pr-merged-badge` (purple pill) when `meta.merged` is true.
-  - Houses **⚡ Batch Apply** and **Submit Review** controls.
+  - Houses **âš¡ Batch Apply** and **Submit Review** controls.
 - **Child PR Launching**:
-  - Command Palette **Git: Open Pull Request…** posts to `/api/pr/launch`.
+  - Command Palette **Git: Open Pull Requestâ€¦** posts to `/api/pr/launch`.
   - Spawns `px0 -y <url>` in a new detached process on an ephemeral port.
 - **Git Panel Resync (`web/src/pr.js`'s `refreshPRMeta`)**:
   - Called by `gitpanel.js` after a successful Pull. Re-fetches `/api/pr/meta`, re-renders the PR bar, and re-fetches existing/draft comments, so a PR that moved forward under the reviewer never leaves the bar, diff warning, or comment threads showing the state from session start.

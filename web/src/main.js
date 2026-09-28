@@ -27,6 +27,7 @@ import { initGitStream } from './gitstream.js';
 import { initGitPanel } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initReview } from './review.js';
+import { initConversation } from './conversation.js';
 import { initLineComment } from './linecomment.js';
 import { initProblems } from './problems.js';
 
@@ -92,6 +93,7 @@ initProblems();
   applyAgentMeta();
   initPR();
   initReview();
+  initConversation(); // before tabs are restored: it registers pr:// tabs
   document.title = S.meta.name + ' - px0';
   $('#root-name').textContent = S.meta.name;
   $('#root-name').title = S.meta.root;
@@ -150,8 +152,12 @@ initProblems();
       window.history.replaceState({}, '', cleanUrl);
     } catch {}
   } else {
-    await restoreWorkspaceTabs();
-    if (hasGitChanges) await selectChangedFileTab();
+    const restored = await restoreWorkspaceTabs();
+    if (S.meta.pr) {
+      // A PR session lands on its Conversation, pinned first; after a reload
+      // the tab the reviewer was on stays active.
+      await openFile('pr://conversation', { push: false, background: restored });
+    } else if (hasGitChanges) await selectChangedFileTab();
   }
 
   if (document.fonts && document.fonts.ready) {

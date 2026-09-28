@@ -51,6 +51,17 @@ From inside a running px0 browser session, the Command Palette (`Cmd/Ctrl+K` →
 
 ## Reviewing & Real-Time Agent Collaboration
 
+### The Conversation Tab
+A PR session opens on its **Conversation** tab, pinned first in the tab bar, as on GitHub:
+- **Header**: title and number, state (open, draft, merged, closed), author, base and head branches, labels, assignees and requested reviewers. For an open PR, a readiness row shows the review decision, whether checks pass, and whether the branch has conflicts.
+- **Description**, rendered as GitHub Flavored Markdown through the same sanitizer as Markdown files: images load from GitHub, and scripts and unsafe HTML are stripped.
+- **Timeline** in GitHub's order: comments, reviews (with their state), commits (consecutive ones grouped), force-pushes, review requests, label changes, and merge, close and reopen events.
+- **Review threads** appear under the review that started them, with the last lines of the diff they are on. Resolved and outdated threads start collapsed. Click a thread's path to open the diff at that line; an outdated thread opens the file's current diff with a note that the line has moved.
+- **Reply** to a thread, **Quote reply** to a comment, or write a new comment at the bottom. These post to GitHub immediately, as on GitHub.
+- The tab refreshes when you come back to it after 30 seconds, after you submit a review, after a Pull, and on **Refresh**. Without a GitHub token it shows the header and description, with a button to connect one.
+
+The file tree and the diff are the "Files changed" view.
+
 ### 1. Merge-Base Diff View
 - The **Changes** toggle in the sidebar defaults to all files modified by the PR.
 - Press **`Cmd/Ctrl+D`** on any file to open side-by-side or unified diffs.

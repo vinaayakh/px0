@@ -70,11 +70,12 @@ function openTabMenu(index, x, y) {
 
 /* Opens (or switches to) a non-file tab registered in virtualtab.js. Its doc
    is empty: the registered feature draws it into the preview surface. */
-function openVirtualTab(path, { push = true } = {}) {
+function openVirtualTab(path, { push = true, background = false } = {}) {
   const spec = virtualTabSpec(path);
   if (!spec) return;
   const prev = doc_();
   let idx = S.tabs.findIndex(t => t.path === path);
+  if (idx >= 0 && background) return;
   if (idx < 0) {
     const d = {
       path, name: spec.title(path), virtual: true, lang: '',
@@ -94,6 +95,8 @@ function openVirtualTab(path, { push = true } = {}) {
       S.tabs.push(d);
       idx = S.tabs.length - 1;
     }
+    // Added without switching to it, when another tab is already showing.
+    if (background && prev) { drawTabs(); saveWorkspaceState(); return; }
   }
   if (prev && prev !== S.tabs[idx]) { prev.scrollTop = vp.scrollTop; clearSelectAll(); clearFind(); }
   S.active = idx;

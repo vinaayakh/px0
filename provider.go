@@ -65,27 +65,99 @@ type PRSummary struct {
 }
 
 // TimelineItem is one entry of a PR's conversation (conversation.go),
-// normalised across event types. Kind selects which optional fields are set:
-// "comment", "review", "commit", "force_push", "review_requested", "labeled",
-// "unlabeled", "merged", "closed", "reopened".
+// normalised across event types, in the forge's own order. Kind selects which
+// optional fields are set: "comment", "review", "commits" (a run of
+// consecutive commits), "force_push", "review_requested", "labeled",
+// "unlabeled", "merged", "closed", "reopened", "ready_for_review",
+// "convert_to_draft".
 type TimelineItem struct {
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	Author    string `json:"author,omitempty"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
-	CreatedAt string `json:"createdAt"`
-	URL       string `json:"url,omitempty"`
-	Body      string `json:"body,omitempty"`     // raw markdown
-	BodyHTML  string `json:"bodyHtml,omitempty"` // goldmark output; the client sanitises it
-	State     string `json:"state,omitempty"`    // review state: approved, changes_requested, commented, dismissed
-	SHA       string `json:"sha,omitempty"`      // commit, force_push (new head)
-	Subject   string `json:"subject,omitempty"`  // commit subject, label name, requested reviewer
+	Kind       string           `json:"kind"`
+	ID         string           `json:"id"`
+	DatabaseID int64            `json:"databaseId,omitempty"` // REST id of a comment, for replies
+	Author     string           `json:"author,omitempty"`
+	AvatarURL  string           `json:"avatarUrl,omitempty"`
+	CreatedAt  string           `json:"createdAt"`
+	URL        string           `json:"url,omitempty"`
+	Body       string           `json:"body,omitempty"`     // raw markdown
+	BodyHTML   string           `json:"bodyHtml,omitempty"` // goldmark output; the client sanitises it
+	State      string           `json:"state,omitempty"`    // review: approved, changes_requested, commented, dismissed
+	SHA        string           `json:"sha,omitempty"`      // force_push (new head), merged (merge commit)
+	BeforeSHA  string           `json:"beforeSha,omitempty"`
+	Subject    string           `json:"subject,omitempty"` // label name, requested reviewer
+	Color      string           `json:"color,omitempty"`   // label colour, hex without #
+	Commits    []TimelineCommit `json:"commits,omitempty"`
 }
 
-// PRConversation is everything the Conversation tab shows beyond PRMeta.
+// TimelineCommit is one commit of a "commits" timeline item.
+type TimelineCommit struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+}
+
+// PRHeader is the top of the Conversation tab.
+type PRHeader struct {
+	Number             int       `json:"number"`
+	Title              string    `json:"title"`
+	State              string    `json:"state"` // open, draft, merged, closed
+	Author             string    `json:"author"`
+	AvatarURL          string    `json:"avatarUrl,omitempty"`
+	URL                string    `json:"url"`
+	CreatedAt          string    `json:"createdAt"`
+	Body               string    `json:"body"`
+	BodyHTML           string    `json:"bodyHtml"`
+	BaseRef            string    `json:"baseRef"`
+	HeadRef            string    `json:"headRef"`
+	Labels             []PRLabel `json:"labels"`
+	Assignees          []string  `json:"assignees"`
+	RequestedReviewers []string  `json:"requestedReviewers"`
+	Mergeable          string    `json:"mergeable"`      // mergeable, conflicting, unknown
+	ReviewDecision     string    `json:"reviewDecision"` // approved, changes_requested, review_required, ""
+	ChecksState        string    `json:"checksState"`    // success, failure, pending, "" (no checks)
+}
+
+// PRLabel is a label with its colour (hex, no #).
+type PRLabel struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// ReviewThread is an inline review thread. ReviewID is the timeline review
+// its first comment belongs to, which is where GitHub shows the thread.
+type ReviewThread struct {
+	ID           string          `json:"id"`
+	Path         string          `json:"path"`
+	Line         int             `json:"line,omitempty"` // current line; 0 when outdated
+	OriginalLine int             `json:"originalLine,omitempty"`
+	StartLine    int             `json:"startLine,omitempty"`
+	Side         string          `json:"side"` // LEFT or RIGHT
+	Resolved     bool            `json:"resolved"`
+	Outdated     bool            `json:"outdated"`
+	DiffHunk     string          `json:"diffHunk,omitempty"`
+	ReviewID     string          `json:"reviewId,omitempty"`
+	Comments     []ThreadComment `json:"comments"`
+}
+
+// ThreadComment is one comment in a review thread.
+type ThreadComment struct {
+	ID         string `json:"id"`
+	DatabaseID int64  `json:"databaseId"`
+	Author     string `json:"author"`
+	AvatarURL  string `json:"avatarUrl,omitempty"`
+	Body       string `json:"body"`
+	BodyHTML   string `json:"bodyHtml"`
+	CreatedAt  string `json:"createdAt"`
+	URL        string `json:"url,omitempty"`
+}
+
+// PRConversation is everything the Conversation tab shows.
 type PRConversation struct {
-	Items  []TimelineItem `json:"items"`
-	Checks []PRCheck      `json:"checks"`
+	Header    PRHeader       `json:"header"`
+	Items     []TimelineItem `json:"items"`
+	Threads   []ReviewThread `json:"threads"`
+	Checks    []PRCheck      `json:"checks"`
+	Truncated bool           `json:"truncated,omitempty"` // page limits hit; the tail is missing
 }
 
 // PRCheck is one check run on the PR head.

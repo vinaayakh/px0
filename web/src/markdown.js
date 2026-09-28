@@ -191,6 +191,13 @@ function mdSanitize(html, docPath) {
   return frag;
 }
 
+/* Markdown rendered from forge data (PR descriptions, comments) goes through
+   the same allowlist as a Markdown file. Relative links resolve against the
+   workspace root. Returns a fragment ready to append. */
+export function sanitizeForgeHTML(html) {
+  return mdSanitize(html || '', '');
+}
+
 /* A reference without a scheme names a file in the workspace, relative to the
    Markdown file's directory, or to the root when it starts with /, as on GitHub.
    Returns null for anything that does not resolve that way. */
