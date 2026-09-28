@@ -78,12 +78,6 @@ func (g *GitHubProvider) ReplyToReviewComment(ctx context.Context, target PRTarg
 	return replyToReviewComment(ctx, target.Owner, target.Repo, target.Number, token, commentID, body)
 }
 
-// ListPRs is implemented with the inbox (M3); the interface is in place so
-// the handler and UI can be built against it.
-func (g *GitHubProvider) ListPRs(ctx context.Context, token, query string) ([]PRSummary, error) {
-	return nil, errProviderUnsupported
-}
-
 func (g *GitHubProvider) FetchConversation(ctx context.Context, target PRTarget, token string) (PRConversation, error) {
 	return fetchConversation(ctx, target.Owner, target.Repo, target.Number, token)
 }

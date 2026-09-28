@@ -20,6 +20,7 @@ See full performance benchmarks and comparisons at [px0.ai/#bench](https://px0.a
 ## Features
 
 - GitHub PR reviews & Git panel: Review pull requests directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline review comments, and stage, commit, or push from the browser.
+- PR inbox: The Pull Requests view lists PRs waiting on your review, your own, and this repository's, with CI and review state; one click opens a PR in its own review session, and a second click brings that session back.
 - PR Conversation tab: The description, reviews, threads, commits and events in one timeline, as on GitHub, with replies and new comments.
 - AI draft review: Run a review skill through Claude Code or Codex, read-only, and get line-anchored suggestions checked against the real diff. Accept (`A`), edit (`E`) or dismiss (`D`) each one; only accepted ones are posted, under your name.
 - AI coding harness integration: Dispatch edits directly to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose with live reloading.

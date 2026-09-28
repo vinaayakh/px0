@@ -15,6 +15,7 @@ import { openFile } from './tabs.js';
 import { layout, render } from './renderer.js';
 import { openSettings } from './settings.js';
 import { emit } from './bus.js';
+import { openPullRequest } from './inbox.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -829,18 +830,11 @@ function renderCommentsPanel() {
 
 /* ---------- launching another PR from a running session ---------- */
 
-// Called from palette.js's "Git: Open Pull Request..." command. Fire and
-// forget: the server re-execs a brand new px0 process (pr.go's
-// handleLaunchPR), which opens its own browser tab the same way any px0
-// invocation does. A failed checkout only ever shows in that child's own
-// terminal, not here -- see docs/internals/github-pr-review.md.
-export async function launchPR(target) {
-  try {
-    await apiPostJson('/api/pr/launch', { target });
-    showToast('✓', 'Opening PR in a new tab…');
-  } catch (e) {
-    showToast('!', e.message || 'Could not launch PR review');
-  }
+// Called from palette.js's "Git: Open Pull Request..." command. The PR opens
+// in a child px0 started by this server (inbox.go's handleLaunchPR), shown in
+// a window named after the PR, so opening it again reuses that session.
+export function launchPR(target) {
+  return openPullRequest(target);
 }
 
 function injectFooterButton() {

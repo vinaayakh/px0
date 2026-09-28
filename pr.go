@@ -579,36 +579,5 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// handleLaunchPR lets an already-running px0 open another PR without
-// disturbing its own session: it re-execs itself as a brand new process on
-// a new port with "px0 -y <url>". The call returns as soon as the child starts.
-func (s *Server) handleLaunchPR(w http.ResponseWriter, r *http.Request) {
-	if !localPost(w, r) {
-		return
-	}
-	var body struct {
-		Target string `json:"target"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || strings.TrimSpace(body.Target) == "" {
-		fail(w, http.StatusBadRequest, "target is required")
-		return
-	}
-	targetURL := strings.TrimSpace(body.Target)
-	if _, _, ok := DetectPRURL(targetURL); !ok {
-		fail(w, http.StatusBadRequest, "target must be a valid pull request URL (e.g. https://github.com/owner/repo/pull/123)")
-		return
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	cmd := exec.Command(exe, "-y", targetURL)
-	cmd.Dir = s.ix.Root()
-	if err := cmd.Start(); err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	go cmd.Wait() // reap without blocking the handler
-	writeJSON(w, map[string]any{"ok": true})
-}
+// handleLaunchPR (opening another PR in a child px0) is in inbox.go, next to
+// the registry that lets a second click reuse the child.

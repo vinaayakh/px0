@@ -190,6 +190,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/review/triage"), s.handleReviewTriage)
 	s.mux.HandleFunc(s.routePath("/api/pr/review/cancel"), s.handleReviewCancel)
 	s.mux.HandleFunc(s.routePath("/api/pr/conversation"), s.handlePRConversation)
+	s.mux.HandleFunc(s.routePath("/api/inbox"), s.handleInbox)
 	s.mux.HandleFunc(s.routePath("/api/session"), s.handleSession)
 }
 

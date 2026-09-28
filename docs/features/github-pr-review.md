@@ -28,6 +28,14 @@ px0 https://github.com/owner/repo/pull/123
 > [!NOTE]
 > Bare PR numbers (e.g. `px0 123`) and the `px0 pr` subcommand have been deprecated in favor of explicit URL routing (`px0 <url>`). Running `px0 pr` provides a helpful reminder to pass the URL directly.
 
+### The Pull Requests Inbox
+From any px0 session, the **Pull Requests** button (third in the Explorer toggle, next to Files and Git changes) lists open pull requests in three sections:
+- **Review requested**: every PR waiting on your review, across repositories, oldest first.
+- **Mine**: your own open PRs.
+- **This repo**: all open PRs of the workspace's GitHub repository (hidden when it has none).
+
+Each row shows the repository and number, title, author, time since the last update, a draft flag, the CI result (✓ passing, ✕ failing, ● running) and the review state (approved, changes requested). Click a row or press **Enter** to open it: px0 checks the PR out in a new session and shows it in its own browser window. Opening the same PR again brings that window back rather than checking it out twice. The list refreshes when you open it, with its refresh button, and every 5 minutes while it is visible. Without a GitHub token it tells you how to add one.
+
 ### Interactive Preparation Spinner
 Because fetching metadata and checking out remote references takes a few moments, px0 displays an animated CLI spinner:
 ```text

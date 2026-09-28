@@ -28,6 +28,7 @@ import { initGitPanel } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initReview } from './review.js';
 import { initConversation } from './conversation.js';
+import { initInbox } from './inbox.js';
 import { initLineComment } from './linecomment.js';
 import { initProblems } from './problems.js';
 
@@ -94,6 +95,7 @@ initProblems();
   initPR();
   initReview();
   initConversation(); // before tabs are restored: it registers pr:// tabs
+  initInbox();
   document.title = S.meta.name + ' - px0';
   $('#root-name').textContent = S.meta.name;
   $('#root-name').title = S.meta.root;
