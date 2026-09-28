@@ -1,0 +1,6 @@
+* m   g0 forks 0>1(g1)
+| * b2  g1
+| * b1  g1
+* | a2  g0
+* a1  g0 joins 1>0
+* r   g0 root

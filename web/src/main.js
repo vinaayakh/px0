@@ -29,6 +29,7 @@ import { initPR } from './pr.js';
 import { initReview } from './review.js';
 import { initConversation } from './conversation.js';
 import { initInbox } from './inbox.js';
+import { initGraph } from './graph.js';
 import { initLineComment } from './linecomment.js';
 import { initProblems } from './problems.js';
 
@@ -96,6 +97,7 @@ initProblems();
   initReview();
   initConversation(); // before tabs are restored: it registers pr:// tabs
   initInbox();
+  initGraph(); // before tabs are restored: it registers git:// tabs
   document.title = S.meta.name + ' - px0';
   $('#root-name').textContent = S.meta.name;
   $('#root-name').title = S.meta.root;
@@ -160,6 +162,8 @@ initProblems();
       // the tab the reviewer was on stays active.
       await openFile('pr://conversation', { push: false, background: restored });
     } else if (hasGitChanges) await selectChangedFileTab();
+    // A link with a graph focus (#graph=ref:feature) opens on the graph.
+    if (/^#graph=/.test(location.hash) && S.meta.git) await openFile('git://graph');
   }
 
   if (document.fonts && document.fonts.ready) {

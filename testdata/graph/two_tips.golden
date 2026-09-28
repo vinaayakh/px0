@@ -1,0 +1,5 @@
+* t1  g0
+| * t2  g1
+* | a2  g0
+* a1  g0 joins 1>0
+* a0  g0 root

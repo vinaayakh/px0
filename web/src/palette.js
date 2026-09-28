@@ -16,6 +16,7 @@ import { togglePreview } from './markdown.js';
 import { openSettings, isAutoRevealEnabled } from './settings.js';
 import { showVimHelp, isVimEnabled, setVimModeEnabled } from './vim.js';
 import { launchPR } from './pr.js';
+import { openGraph } from './graph.js';
 import { newThread } from './thread.js';
 
 export const overlay = $('#overlay');
@@ -27,6 +28,7 @@ export let pal = null;
 export const COMMANDS = [
   { name: withKeys('Preferences: Open Settings (UI) ({Mod+,})'), run: () => openSettings('ui') },
   { name: 'Preferences: Open Settings (JSON)', run: () => openSettings('json') },
+  { name: 'Git: Show Graph', run: () => openGraph() },
   { name: 'Go to File…', run: () => openPalette('file') },
   { name: 'Go to Symbol in File…', run: () => openPalette('symbol') },
   { name: 'Go to Line…', run: () => openPalette('line') },

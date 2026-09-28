@@ -77,6 +77,20 @@ When a teammate (or CI) has pushed new commits to the branch you're reviewing:
 2. If your local branch can fast-forward cleanly onto the new commits, px0 updates it and the diff view refreshes automatically.
 3. If your branch has diverged — you have local commits the remote doesn't, or the remote history was rewritten — px0 refuses with a clear message instead of attempting a merge. Resolve it in a terminal, then pull again.
 
+### The Commit Graph and Branch Health
+**Graph** in the git panel header (or **Git: Show Graph** in the Command Palette) opens a tab with the commit graph of every local and remote branch and tag. Each row shows the lanes, ref pills (local branches, remote branches, tags, and the checked-out branch highlighted), the subject, author, age and short hash; merges are drawn as hollow dots. Only the rows on screen are drawn, so even a repository with 100,000 commits scrolls smoothly, and more history loads as you scroll.
+
+The list beside the graph sorts every branch against the default branch (`origin/HEAD`, or `main` / `master`, or the `graph.defaultBranch` setting) and shows how far ahead and behind it is:
+- **active** and **stale** (unmerged; stale after `graph.staleDays`, 30 days, without commits),
+- **upstream gone** (a local branch whose remote branch was deleted),
+- **squash merged?** (not in the default branch, but GitHub has a merged PR from it; needs a GitHub token),
+- **merged** (already in the default branch: safe to delete),
+- **orphan** (no history in common with the default branch).
+
+Filter the list by category with the chips above it.
+
+**Focus** a branch by clicking it in the list, clicking a ref pill, or clicking any lane in the graph — even the lane of a branch that was merged and deleted long ago. Its own commits, the commit it forked from and the merge that brought it in stay bright; everything else fades. The focus is kept in the page URL, so a reload or a shared link keeps it. Press **Esc** or click empty space to clear it. The graph only reads: nothing is checked out, rebased or deleted from it.
+
 ---
 
 ## Keyboard Shortcuts & Controls
@@ -94,6 +108,9 @@ When a teammate (or CI) has pushed new commits to the branch you're reviewing:
 | **Commit with AI** | Git Panel | Write a commit message from the staged diff with the selected harness, then commit with it |
 | **Pull** | Git Panel | Fast-forward onto the remote (or, in PR review, the PR's current head); refuses on divergence |
 | **Push** | Git Panel | Push the current branch (or, in PR review, to the PR's head branch) |
+| **Graph** / **Git: Show Graph** | Git Panel header / Command Palette | Open the commit graph with branch health |
+| Click a branch, ref pill or lane | Graph tab | Focus that branch's commits, fork point and merge |
+| `Esc` / click empty space | Graph tab | Clear the focus |
 
 ---
 

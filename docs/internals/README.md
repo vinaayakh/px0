@@ -2,7 +2,7 @@
 
 Welcome to the internal engineering documentation for px0, an ultra-lightweight, zero-config code reader and navigator that delegates edits to the user's coding agent, packaged as a single statically-linked binary (~9.5 MB).
 
-This directory contains in-depth technical write-ups explaining how px0 achieves sub-millisecond startup, instantaneous file navigation, deep code intelligence, and a minimal memory footprint (~20Ã¢â‚¬â€œ30 MB RSS) across codebases containing tens of thousands of files.
+This directory contains in-depth technical write-ups explaining how px0 achieves sub-millisecond startup, instantaneous file navigation, deep code intelligence, and a minimal memory footprint (~20ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“30 MB RSS) across codebases containing tens of thousands of files.
 
 ## 1. Subsystem Architecture Map
 
@@ -69,6 +69,7 @@ The internal documentation is modularized into the following focused guides:
 - [Language Server Protocol (LSP) Architecture](lsp-and-intelligence.md): Lazy on-demand server lifecycle, zero-cost background binary discovery, external path boundary control, stateless call hierarchy trails, in-app installer recipes, and regex fallback.
 - [Git Awareness, Diffing & Stage/Commit/Push/Pull](git-integration.md): CLI shell-out architecture; status/diffing stay read-only, while the sidebar git panel's stage, commit, fast-forward-only pull, and push are explicit, click-triggered writes. Concurrent status generation with indexing, ancestor folder dirty propagation, gutter diff parsing, the client-side split/unified diff renderer, and AI-written commit messages via a file-free harness dispatch.
 - [GitHub PR Review](github-pr-review.md): Extensible `GitProvider` interface and URL matching, zero-dependency REST client and multi-source auth resolution (`settings.json`, `GITHUB_TOKEN`, `GH_TOKEN`, `gh auth token`), animated CLI spinner, interactive merged-PR confirmation, temp-dir worktree checkout scoped to process lifetime, merge-base diffing instead of `HEAD`, fail-closed push-access gating, in-memory draft comment model, AI agent batch-apply integration, and pushing/fast-forward-pulling directly against the PR's own head branch.
+- [Git Graph](git-graph.md): The Graph tab: streamed `git log --topo-order` laid out in Go with lane segments, 2,000-row pages with carried lane state, branch health categories against the default branch, and focus sets for branches, lanes and deleted branches.
 - [PR Inbox](inbox.md): The sidebar list of PRs awaiting review, yours and this repository's: one GraphQL search per section with CI and review state, the 60-second cache, and launching a child px0 per PR that a second click reuses.
 - [PR Conversation](conversation.md): The pinned Conversation tab: paginated GraphQL for the timeline and review threads, normalising events into one ordered timeline, goldmark bodies sanitised in the browser, the 30-second cache, and posting replies.
 - [AI Review](ai-review.md): Read-only review runs through a harness, the review doc handed over in a temp directory instead of argv, output parsing with markers, anchoring suggestions against the real diff (re-anchoring by quoted line, file-level and summary fallbacks), triage statuses, and what gets submitted.
