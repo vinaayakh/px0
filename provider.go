@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -30,6 +31,71 @@ type PRMeta struct {
 	HeadSHA          string
 	HeadRepoCloneURL string
 	HeadIsFork       bool
+
+	Body               string   // PR description, raw markdown
+	Labels             []string // label names
+	Assignees          []string // logins
+	RequestedReviewers []string // logins, and "org/team" slugs for team requests
+	// Mergeable is the forge's merge-readiness state, lower-cased: GitHub's
+	// mergeable_state ("clean", "dirty", "blocked", "behind", "unstable",
+	// "draft", "unknown"). Empty when the forge has not computed it yet.
+	Mergeable string
+}
+
+// errProviderUnsupported is returned by a provider method the forge (or px0's
+// support for it) does not implement yet.
+var errProviderUnsupported = errors.New("not supported by this provider yet")
+
+// PRSummary is one row of the PR inbox (inbox.go): enough to list and launch a
+// PR without checking it out.
+type PRSummary struct {
+	URL       string `json:"url"`
+	Repo      string `json:"repo"` // owner/name
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	Author    string `json:"author"`
+	Draft     bool   `json:"draft"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	// CI is the head commit's check rollup: "pass", "fail", "pending", or ""
+	// when the head has no checks.
+	CI string `json:"ci"`
+	// Review is the review decision: "approved", "changes_requested", or "".
+	Review string `json:"review"`
+}
+
+// TimelineItem is one entry of a PR's conversation (conversation.go),
+// normalised across event types. Kind selects which optional fields are set:
+// "comment", "review", "commit", "force_push", "review_requested", "labeled",
+// "unlabeled", "merged", "closed", "reopened".
+type TimelineItem struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	Author    string `json:"author,omitempty"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	URL       string `json:"url,omitempty"`
+	Body      string `json:"body,omitempty"`     // raw markdown
+	BodyHTML  string `json:"bodyHtml,omitempty"` // goldmark output; the client sanitises it
+	State     string `json:"state,omitempty"`    // review state: approved, changes_requested, commented, dismissed
+	SHA       string `json:"sha,omitempty"`      // commit, force_push (new head)
+	Subject   string `json:"subject,omitempty"`  // commit subject, label name, requested reviewer
+}
+
+// PRConversation is everything the Conversation tab shows beyond PRMeta.
+type PRConversation struct {
+	Items  []TimelineItem `json:"items"`
+	Checks []PRCheck      `json:"checks"`
+}
+
+// PRCheck is one check run on the PR head.
+type PRCheck struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`     // queued, in_progress, completed
+	Conclusion  string `json:"conclusion"` // success, failure, neutral, cancelled, skipped, timed_out, action_required, ""
+	StartedAt   string `json:"startedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
+	URL         string `json:"url,omitempty"`
 }
 
 // PRComment is a comment already posted on the pull request, fetched
@@ -86,6 +152,14 @@ type GitProvider interface {
 	// ReplyToReviewComment posts an immediate, threaded reply to an existing
 	// inline review comment.
 	ReplyToReviewComment(ctx context.Context, target PRTarget, token string, commentID int64, body string) (PRComment, error)
+
+	// ListPRs runs a forge search (e.g. "is:open is:pr review-requested:@me")
+	// and returns one summary per PR, for the inbox.
+	ListPRs(ctx context.Context, token, query string) ([]PRSummary, error)
+
+	// FetchConversation returns the PR's timeline and the head's checks, for
+	// the Conversation tab.
+	FetchConversation(ctx context.Context, target PRTarget, token string) (PRConversation, error)
 }
 
 var defaultProviders = []GitProvider{

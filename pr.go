@@ -303,21 +303,57 @@ func (s *Server) handlePRMeta(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	writeJSON(w, map[string]any{
-		"number":          p.meta.Number,
-		"title":           p.meta.Title,
-		"author":          p.meta.Author,
-		"base":            p.meta.BaseRef,
-		"head":            p.meta.HeadRef,
-		"state":           p.meta.State,
-		"merged":          p.meta.Merged,
-		"mergedAt":        p.meta.MergedAt,
-		"writeAccess":     p.writeAccess,
-		"readOnly":        p.token == "",
-		"draftCount":      len(p.comments),
-		"diffBaseWarning": p.diffBaseWarning,
-		"headSHA":         p.meta.HeadSHA,
-		"url":             p.target.URL,
+		"number":             p.meta.Number,
+		"title":              p.meta.Title,
+		"author":             p.meta.Author,
+		"base":               p.meta.BaseRef,
+		"head":               p.meta.HeadRef,
+		"state":              p.meta.State,
+		"merged":             p.meta.Merged,
+		"mergedAt":           p.meta.MergedAt,
+		"writeAccess":        p.writeAccess,
+		"readOnly":           p.token == "",
+		"draftCount":         countSubmittable(p.comments),
+		"diffBaseWarning":    p.diffBaseWarning,
+		"headSHA":            p.meta.HeadSHA,
+		"url":                p.target.URL,
+		"draft":              p.meta.Draft,
+		"body":               p.meta.Body,
+		"labels":             nonNilStrings(p.meta.Labels),
+		"assignees":          nonNilStrings(p.meta.Assignees),
+		"requestedReviewers": nonNilStrings(p.meta.RequestedReviewers),
+		"mergeable":          p.meta.Mergeable,
 	})
+}
+
+func countSubmittable(cs []prComment) int {
+	n := 0
+	for _, c := range cs {
+		if c.submittable() {
+			n++
+		}
+	}
+	return n
+}
+
+// splitSubmittable partitions drafts into what the next review sends and
+// what stays behind (pending or dismissed AI suggestions).
+func splitSubmittable(cs []prComment) (send, keep []prComment) {
+	for _, c := range cs {
+		if c.submittable() {
+			send = append(send, c)
+		} else if c.Status != prStatusDismissed {
+			keep = append(keep, c)
+		}
+	}
+	return send, keep
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // handlePRExistingComments fetches every comment already posted on the PR
@@ -446,7 +482,8 @@ func (s *Server) handlePRComments(w http.ResponseWriter, r *http.Request) {
 		}
 		p.mu.Lock()
 		p.nextID++
-		c := prComment{ID: p.nextID, Path: body.Path, Line: body.Line, Side: side, Body: strings.TrimSpace(body.Body)}
+		c := prComment{ID: p.nextID, Path: body.Path, Line: body.Line, Side: side, Body: strings.TrimSpace(body.Body),
+			Origin: prOriginHuman, Status: prStatusAccepted}
 		p.comments = append(p.comments, c)
 		if s.session != nil {
 			s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = p.comments })
@@ -510,8 +547,10 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "no push access on this repository; only Comment reviews are allowed")
 		return
 	}
+	// Only human drafts and AI suggestions the reviewer accepted or edited are
+	// sent; pending suggestions stay for the next review, dismissed ones go.
 	p.mu.Lock()
-	comments := append([]prComment(nil), p.comments...)
+	comments, _ := splitSubmittable(p.comments)
 	p.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -521,9 +560,19 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.mu.Lock()
-	p.comments = nil
+	sent := make(map[int64]bool, len(comments))
+	for _, c := range comments {
+		sent[c.ID] = true
+	}
+	var remaining []prComment
+	for _, c := range p.comments {
+		if !sent[c.ID] && c.Status != prStatusDismissed {
+			remaining = append(remaining, c)
+		}
+	}
+	p.comments = remaining
 	if s.session != nil {
-		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = nil })
+		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = remaining })
 	}
 	p.mu.Unlock()
 	writeJSON(w, map[string]any{"ok": true})

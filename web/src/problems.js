@@ -29,7 +29,7 @@ export function isProblemOnChangedLine(d, p) {
  * Loads problems for the given document tab.
  */
 export async function loadProblems(d, force = false) {
-  if (!d || d.isImage) return null;
+  if (!d || d.isImage || d.virtual) return null;
   if (!force && d.problemsLoaded && d.problemsReq === null) return d.problems;
   if (d.problemsReq && !force) return d.problemsReq;
 

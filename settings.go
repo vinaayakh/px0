@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // px0 keeps no state inside a workspace. The user's preferences and choices
@@ -36,6 +37,40 @@ type settings struct {
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
+	ReviewSkillPath             *string  `json:"review.skillPath,omitempty"`
+	ReviewTimeoutSeconds        *float64 `json:"review.timeoutSeconds,omitempty"`
+	GraphStaleDays              *float64 `json:"graph.staleDays,omitempty"`
+	GraphDefaultBranch          *string  `json:"graph.defaultBranch,omitempty"`
+}
+
+const (
+	defaultReviewTimeout  = 15 * time.Minute
+	defaultGraphStaleDays = 30
+)
+
+// reviewTimeout is the hard limit on an AI review run: the setting, clamped
+// to 1-60 minutes, or defaultReviewTimeout.
+func (s settings) reviewTimeout() time.Duration {
+	if s.ReviewTimeoutSeconds == nil || *s.ReviewTimeoutSeconds <= 0 {
+		return defaultReviewTimeout
+	}
+	d := time.Duration(*s.ReviewTimeoutSeconds * float64(time.Second))
+	if d < time.Minute {
+		return time.Minute
+	}
+	if d > time.Hour {
+		return time.Hour
+	}
+	return d
+}
+
+// graphStaleDays is how long an unmerged branch may go without commits before
+// the graph calls it stale.
+func (s settings) graphStaleDays() int {
+	if s.GraphStaleDays == nil || *s.GraphStaleDays < 1 {
+		return defaultGraphStaleDays
+	}
+	return int(*s.GraphStaleDays)
 }
 
 var settingsMu sync.Mutex
@@ -361,6 +396,44 @@ var settingsSchema = []settingSchemaItem{
 		Type:        "string",
 		Default:     "",
 		Secret:      true,
+	},
+	{
+		Key:         "review.skillPath",
+		Title:       "AI Review Skill",
+		Description: "Path to a markdown file with the review instructions sent to the harness by Run AI Review. Empty uses ~/.px0/skills/review.md if it exists, otherwise the built-in skill. px0 always appends its output format.",
+		Category:    "GitHub",
+		Type:        "string",
+		Default:     "",
+	},
+	{
+		Key:         "review.timeoutSeconds",
+		Title:       "AI Review Timeout (Seconds)",
+		Description: "Maximum time an AI review run may take before it is cancelled.",
+		Category:    "GitHub",
+		Type:        "number",
+		Default:     900.0,
+		Min:         numPtr(60.0),
+		Max:         numPtr(3600.0),
+		Step:        numPtr(60.0),
+	},
+	{
+		Key:         "graph.staleDays",
+		Title:       "Stale Branch Age (Days)",
+		Description: "An unmerged branch with no commits for this many days is labelled Stale in the git graph.",
+		Category:    "Git & Diff",
+		Type:        "number",
+		Default:     30.0,
+		Min:         numPtr(1.0),
+		Max:         numPtr(365.0),
+		Step:        numPtr(1.0),
+	},
+	{
+		Key:         "graph.defaultBranch",
+		Title:       "Default Branch",
+		Description: "Branch the git graph compares every other branch against. Empty uses origin/HEAD, then main, then master.",
+		Category:    "Git & Diff",
+		Type:        "string",
+		Default:     "",
 	},
 	{
 		Key:         "server.basePath",

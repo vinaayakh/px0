@@ -46,6 +46,8 @@ px0 stores all configuration in a single per-user global file (`~/.px0/settings.
 | `diffEditor.ignoreTrimWhitespace` | Diff Editor | `true` | `true`, `false` | Ignore whitespace differences in diffs |
 | `git.gutterIndicators` | Git | `true` | `true`, `false` | Visual change markers in gutter |
 | `git.commitMessageInstruction` | Git & Diff | `""` | any string (multi-line textarea) | Extra instructions given to the coding harness when the git panel's **Commit with AI** writes a commit message |
+| `graph.staleDays` | Git & Diff | `30` | `1` – `365` (days) | An unmerged branch with no commits for this long is labelled Stale in the git graph |
+| `graph.defaultBranch` | Git & Diff | `""` | any branch name | Branch the git graph compares others against; empty uses `origin/HEAD`, then `main`, then `master` |
 | `explorer.compactFolders` | Explorer | `true` | `true`, `false` | Compact single-child directory chains |
 | `explorer.autoReveal` | Explorer | `true` | `true`, `false` | Auto-scroll to active file in tree |
 | `files.exclude` | Files | Default globs | Array of glob patterns | Exclude patterns from trees and searches |
@@ -56,6 +58,8 @@ px0 stores all configuration in a single per-user global file (`~/.px0/settings.
 | `agent.harness` | Coding Agent | `""` | `claude`, `gemini`, `agy`, etc. | Preferred CLI coding harness |
 | `agent.timeoutSeconds` | Coding Agent | `120` | `10` – `600` (seconds) | Max runtime for agent edits |
 | `github.token` | GitHub | `""` | any string | Personal access token for `px0 pr` review; takes precedence over `GITHUB_TOKEN` and `gh auth token`. Masked in the Settings UI. |
+| `review.skillPath` | GitHub | `""` | path to a markdown file | Review instructions for **Run AI Review**; empty uses `~/.px0/skills/review.md`, then the built-in skill. px0 always appends its output format. |
+| `review.timeoutSeconds` | GitHub | `900` | `60` – `3600` (seconds) | Max runtime for an AI review run |
 | `server.basePath` | Server | `"/"` | any path prefix (e.g. `"/rev-123/"`) | Base URL path prefix to serve endpoints and assets from. Overridden by the `-base-path` CLI flag. |
 
 ---

@@ -11,6 +11,7 @@ import { revealDir } from './tree.js';
 import { findbar, runFind } from './find.js';
 import { hideHover } from './hover.js';
 import { buildTable } from './table.js';
+import { virtualTabSpec } from './virtualtab.js';
 
 /* Markdown tabs open rendered. The server converts the file with goldmark and
    passes raw HTML through, so nothing it returns is trusted: mdSanitize rebuilds
@@ -27,13 +28,15 @@ let mdShown = null;  // doc the preview is showing, null while it is hidden
 let mdDrawn = null;  // doc whose HTML is in the article; drawing can wait on a fetch
 let mdGen = 0;
 
-/* 'markdown', 'table', or '' for a tab with no rendered view. */
+/* 'markdown', 'table', 'virtual' (a non-file tab, always shown here), or ''
+   for a tab with no rendered view. */
 export function previewKind(d = doc_()) {
-  return d ? (d.markdown ? 'markdown' : d.table ? 'table' : '') : '';
+  return d ? (d.virtual ? 'virtual' : d.markdown ? 'markdown' : d.table ? 'table' : '') : '';
 }
 
 export function previewing(d = doc_()) {
   const kind = previewKind(d);
+  if (kind === 'virtual') return true;
   const on = kind === 'markdown' ? S.mdPreview : kind === 'table' ? S.tablePreview : false;
   return !!(on && !d.mdError && !d.diffMode);
 }
@@ -51,8 +54,23 @@ export function syncPreview() {
   if (want) drawPreview(want);
 }
 
+/* The article a virtual tab draws into, or null when that tab is not the one
+   shown -- a feature refreshing its tab asynchronously checks this first. */
+export function virtualArticle(d) {
+  return d && d.virtual && mdShown === d ? mdArticle : null;
+}
+
 async function drawPreview(d) {
   const gen = ++mdGen;
+  if (d.virtual) {
+    mdArticle.className = 'md vtab';
+    const spec = virtualTabSpec(d.path);
+    mdDrawn = d;
+    try { await spec?.render(mdArticle, d); }
+    catch (e) { if (gen === mdGen && mdShown === d) showToast('!', d.name + ': ' + e.message); }
+    if (gen === mdGen && mdShown === d) mdview.scrollTop = d.mdScroll || 0;
+    return;
+  }
   const table = previewKind(d) === 'table';
   if ((table ? d.tableData : d.mdHtml) === undefined) {
     try {
@@ -90,7 +108,9 @@ async function drawPreview(d) {
 
 export function togglePreview() {
   const d = doc_();
-  if (!previewKind(d)) { showToast('!', 'Preview works on Markdown, CSV and TSV files'); return; }
+  const kind = previewKind(d);
+  if (kind === 'virtual') return;
+  if (!kind) { showToast('!', 'Preview works on Markdown, CSV and TSV files'); return; }
   hideHover();
   if (previewing(d)) {
     const line = mdDrawn === d ? previewTopLine() : 1;

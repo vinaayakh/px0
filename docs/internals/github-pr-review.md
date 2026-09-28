@@ -27,8 +27,15 @@ type GitProvider interface {
     FetchPR(ctx context.Context, target PRTarget, token string) (PRMeta, error)
     CheckPushAccess(ctx context.Context, target PRTarget, token string) bool
     SubmitReview(ctx context.Context, target PRTarget, token, headSHA string, comments []prComment, event, body string) error
+    FetchComments(ctx context.Context, target PRTarget, token string) (issue, review []PRComment, err error)
+    PostIssueComment(ctx context.Context, target PRTarget, token, body string) (PRComment, error)
+    ReplyToReviewComment(ctx context.Context, target PRTarget, token string, commentID int64, body string) (PRComment, error)
+    ListPRs(ctx context.Context, token, query string) ([]PRSummary, error)
+    FetchConversation(ctx context.Context, target PRTarget, token string) (PRConversation, error)
 }
 ```
+
+`ListPRs` (PR inbox) and `FetchConversation` (Conversation tab) are declared with their types but return `errProviderUnsupported` until those features land.
 
 ### Data Models
 - **`PRTarget`**: Normalized identifier containing `Provider`, `Owner`, `Repo`, `Number`, and original `URL`.
@@ -38,6 +45,13 @@ type GitProvider interface {
   - `Draft`
   - `BaseRef`, `HeadRef`, `HeadSHA`
   - `HeadRepoCloneURL`, `HeadIsFork`
+  - `Body` (raw markdown), `Labels`, `Assignees`, `RequestedReviewers` (logins, and `owner/team` for team requests; never nil)
+  - `Mergeable`: GitHub's `mergeable_state`, lower-cased (`clean`, `dirty`, `blocked`, `behind`, `unstable`, `draft`, `unknown`), or empty while GitHub is still computing it
+- **`PRSummary`**: one inbox row (repo, number, title, author, draft, created/updated, CI rollup `pass`/`fail`/`pending`, review decision).
+- **`PRConversation`**: `[]TimelineItem` (one struct for every event kind, told apart by `kind`) plus `[]PRCheck` for the head.
+
+### GraphQL
+`githubGraphQL(ctx, token, query, vars, out)` posts to `/graphql` through the same `githubRequest` (plain `net/http`, no SDK). A response carrying `errors` fails with the first message even when partial `data` came back, since every caller needs the whole result. GraphQL always needs a token.
 
 ### URL Matching & Routing
 Pull requests are opened exclusively via `px0 <url>`. URL routing in `main.go` calls:
@@ -135,13 +149,15 @@ func gitMergeBase(root, a, b string) string
 - `POST /api/pr/comments`: Appends a line comment (`Path`, `Line`, `Side`, `Body`). Allowed unauthenticated so reviewers can draft feedback locally.
 - `POST /api/pr/comments/delete`: Deletes a draft by ID.
 
+Each draft carries an `origin` (`human`, or `ai` for a suggestion from AI review) and a `status` (`pending`, `accepted`, `edited`, `dismissed`). A human draft is created `accepted`; a suggestion starts `pending` and only the reviewer's accept or edit makes it submittable. An empty status (a draft restored from an older session file) counts as accepted. `draftCount` in `/api/pr/meta` counts submittable drafts only. Optional fields: `startLine` for a multi-line range, `subjectType: "file"` for a comment on the whole file, `runId` and `fingerprint` for AI suggestions.
+
 ### Batch Apply with Coding Agents (`⚡ Batch Apply`)
 Users can delegate all drafted PR comments directly to an AI coding agent (Claude Code, Gemini CLI, Cursor Agent, Antigravity, etc.). The agent harness receives the comments as targeted editing instructions and modifies the worktree files directly.
 
 ### Formal Review Submission
 - `POST /api/pr/submit`: Requires auth token.
-- Calls `provider.SubmitReview` which constructs a single review payload containing the head commit SHA, all drafted comments, and the review body/event (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`).
-- Clears in-memory drafts upon successful submission.
+- Calls `provider.SubmitReview` which constructs a single review payload containing the head commit SHA, the submittable drafts (human drafts plus accepted or edited AI suggestions), and the review body/event (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`). A range sends `start_line`/`start_side`. The create-review endpoint anchors every comment to a line, so file-level comments are folded into the review body under their path.
+- On success, removes the drafts it sent and any dismissed suggestions; pending suggestions stay for the next review.
 
 ---
 

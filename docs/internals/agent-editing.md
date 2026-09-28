@@ -134,6 +134,17 @@ The template is split on whitespace, and `{prompt}` is substituted inside each t
 
 The binary is resolved before a harness can be selected, so a typo or an uninstalled tool fails at the point of choosing rather than on first use.
 
+### Read-Only Argv
+
+A preset may also carry `ReadOnlyArgs`, the argv for a run that must not change the working tree (AI review, `StartReview` below). It keeps the headless flag but drops the edit-approval flag, turns off the harness's file-writing tools, and may name `{tmpdir}`, a directory outside the worktree that px0 fills with the review context and the harness is allowed to read. The model flag is spliced in the same way as for `Args` (`presetArgv`).
+
+| Harness | Read-only argv |
+| --- | --- |
+| `claude` | `claude --permission-mode default --disallowedTools Edit,Write,MultiEdit,NotebookEdit --add-dir {tmpdir} --model haiku -p {prompt}` |
+| `codex` | `codex exec --ask-for-approval never --sandbox read-only -m gpt-5-codex {prompt}` |
+
+The other presets, and every custom command template, have no read-only mode px0 can enforce, so `StartReview` refuses them (`errAgentNoReadOnly`) instead of falling back to the edit argv; `/api/agent/harnesses` reports `readOnly` per harness so the UI can say why. In print mode Claude Code denies any tool that would need approval, so Bash is refused too unless the user allowlisted a command. For that case, and for any harness whose sandbox leaks, the worktree snapshot is the backstop (§ Prompts With No File).
+
 ### Stdin Stays Empty
 
 `cmd.Stdin` is never set. A harness that still decides to ask something reads EOF and exits, which surfaces as an error in the job. This mirrors the same decision in the language-server installer ([`lspsetup.go`](../../lspsetup.go)) and is the difference between a failed run and a hung one.
@@ -199,6 +210,8 @@ px0 dispatched the harness, so it knows when the work ended. Completion is detec
 
 Every dispatch above is anchored to a file range. `agentManager.StartPrompt(label, prompt)` is a narrower sibling of `StartBatch` used by exactly one caller today — the sidebar git panel's **Commit with AI** (`handleGitCommitMessage` in `server.go`, [Git Awareness §9](git-integration.md)) — to have a harness write a commit message rather than edit code. It skips everything file-range-specific (no snippet read, no overlap check against `jobs`, no target path) and reuses `run()` unchanged: same spawn, same `tailBuffer` stdout/stderr capture, same `changedSince` diff (which comes back empty, since a well-behaved prompt like this never touches disk). The `agentJob` it returns is polled through the very same `/api/agent/job`, so the frontend's polling logic doesn't need to know which kind of job it's watching.
 
+`agentManager.StartReview(label, prompt, reviewJobOpts)` is the read-only variant, for AI review of a PR. It runs the preset's `ReadOnlyArgs` (refusing a harness without them), keeps a larger stdout tail (`OutBytes`, 1 MB for reviews, since the structured result is parsed from it), takes its own `Timeout` (setting `review.timeoutSeconds`), and substitutes `TmpDir` for `{tmpdir}`; with no tmpdir, `expandArgv` drops `{tmpdir}` together with the flag in front of it. The prompt stays short and points at files in that directory: one argv element is capped at 32 KB on Windows and 128 KB on Linux, far below a large PR's diff. The job is marked `readOnly`, and if the worktree snapshot taken around the run shows any change, `tainted` is set and the change is logged. px0 does not revert the files; they stay for the reviewer to inspect, and the review UI warns about the run.
+
 A job snapshot:
 
 ```json
@@ -230,8 +243,8 @@ The explicit first-run pick matters for the same reason. Auto-enabling on discov
 
 ## 9. Limits
 
-- The job keeps the last 32 KB of each of stdout and stderr (`tailBuffer`), enough to explain a failure without holding a full transcript.
-- A run is abandoned after 10 minutes.
+- The job keeps the last 32 KB of each of stdout and stderr (`tailBuffer`), enough to explain a failure without holding a full transcript. A review job (`StartReview`) keeps up to 1 MB of stdout.
+- A run is abandoned after 10 minutes; a review run after `review.timeoutSeconds` (15 minutes by default).
 - Changes to gitignored files are invisible to `git status`, so they are never reloaded.
 - Inline edit instructions live in memory for the life of the process. Only the harness choice is persisted, and never inside a workspace. Conversations that should persist are [threads](threads.md).
 - Leaving the tab while an edit is in flight is guarded by a `beforeunload` prompt, but closing the browser process outright or losing power still abandons the harness mid-run with no undo to fall back on.

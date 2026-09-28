@@ -16,6 +16,7 @@ import { syncPreview, previewing, previewLine } from './markdown.js';
 import { updateProblemsBadge, renderProblemsPane } from './problems.js';
 import { syncDiffView, layoutPref, diffScrollTop, setDiffMode, setSourceJumpHandler, scrollDiffToLine } from './diff.js';
 import { syncImageView } from './imageview.js';
+import { isVirtualPath, virtualTabSpec } from './virtualtab.js';
 
 // Recently closed files, newest last, for Alt+Shift+T.
 const closedTabs = [];
@@ -67,7 +68,53 @@ function openTabMenu(index, x, y) {
   tabMenu.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + 'px';
 }
 
+/* Opens (or switches to) a non-file tab registered in virtualtab.js. Its doc
+   is empty: the registered feature draws it into the preview surface. */
+function openVirtualTab(path, { push = true } = {}) {
+  const spec = virtualTabSpec(path);
+  if (!spec) return;
+  const prev = doc_();
+  let idx = S.tabs.findIndex(t => t.path === path);
+  if (idx < 0) {
+    const d = {
+      path, name: spec.title(path), virtual: true, lang: '',
+      total: 0, maxCols: 0, size: 0, lines: [],
+      chunks: new Set(), pending: new Set(), refining: new Set(),
+      scrollTop: 0, cur: 1, outline: [], gen: 0,
+      markdown: false, table: false, isImage: false, deleted: false,
+      gutter: null, diffMode: null, diffAvailable: false, diffDismissed: true, openedInDiffView: false,
+      lsp: { state: 'off', server: '' }, problemsLoaded: true,
+    };
+    if (spec.pinned) {
+      const at = S.tabs.findIndex(t => !(t.virtual && virtualTabSpec(t.path)?.pinned));
+      idx = at < 0 ? S.tabs.length : at;
+      S.tabs.splice(idx, 0, d);
+      if (S.active >= idx) S.active++;
+    } else {
+      S.tabs.push(d);
+      idx = S.tabs.length - 1;
+    }
+  }
+  if (prev && prev !== S.tabs[idx]) { prev.scrollTop = vp.scrollTop; clearSelectAll(); clearFind(); }
+  S.active = idx;
+  const d = S.tabs[idx];
+  $('#empty').hidden = true;
+  syncImageView();
+  syncPreview();
+  syncDiffView();
+  S.at = null;
+  S.lsp.state = 'off'; S.lsp.server = ''; S.lsp.missing = '';
+  drawTabs(); drawCrumbs(); layout();
+  render();
+  updateStatus();
+  updateProblemsBadge(d);
+  if (push) pushHistory(path, 1);
+  saveWorkspaceState();
+  emit('tab:activated', { doc: d, prevDoc: prev });
+}
+
 export async function openFile(path, opts = {}) {
+  if (isVirtualPath(path)) { openVirtualTab(path, opts); return; }
   const { line, push = true, col, view } = opts;
   const prev = doc_();
   const sourceSelected = prev ? !prev.diffMode : false;
@@ -238,7 +285,7 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
     }
   }
 
-  const targets = S.tabs.map(t => ({
+  const targets = S.tabs.filter(t => !t.virtual).map(t => ({
     oldDoc: t,
     path: t.path,
     anchor: t.cur || 1,
@@ -323,10 +370,10 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
   if (onlyIfChanged && !anyChanged) return;
 
   // Load all gutters concurrently before initial paint
-  await Promise.allSettled(S.tabs.filter(t => !t.isImage).map(t => loadGutter(t)));
+  await Promise.allSettled(S.tabs.filter(t => !t.isImage && !t.virtual).map(t => loadGutter(t)));
 
   for (const t of S.tabs) {
-    t.problemsLoaded = false;
+    if (!t.virtual) t.problemsLoaded = false;
   }
 
   const d = doc_();
@@ -395,7 +442,7 @@ function closeTabs(indices) {
     if (closed.path) {
       closedTabs.push({ path: closed.path, cur: closed.cur, scrollTop: closed.scrollTop });
       if (closedTabs.length > MAX_CLOSED) closedTabs.shift();
-      evictions.push(api('/api/close', { path: closed.path }));
+      if (!closed.virtual) evictions.push(api('/api/close', { path: closed.path }));
     }
     // Release large arrays to assist garbage collection
     closed.lines = null;
@@ -452,7 +499,7 @@ export async function reopenClosedTab() {
 
 export function drawTabs() {
   $('#tabs').innerHTML = S.tabs.map((t, i) =>
-    '<div class="tab' + (i === S.active ? ' active' : '') + (t.isImage ? ' tab-image' : '') + (t.deleted ? ' tab-deleted' : '') + '" data-i="' + i + '" title="' + esc(t.path) + '">' +
+    '<div class="tab' + (i === S.active ? ' active' : '') + (t.isImage ? ' tab-image' : '') + (t.deleted ? ' tab-deleted' : '') + (t.virtual ? ' tab-virtual' : '') + '" data-i="' + i + '" title="' + esc(t.virtual ? t.name : t.path) + '">' +
     (t.isImage ? '<svg class="tab-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="2"/><circle cx="5.5" cy="5.5" r="1.5"/><path d="M14 10l-3.5-3.5L3 14"/></svg>' : '') +
     '<span class="tn">' + esc(t.name) + '</span>' +
     '<span class="x" data-close="' + i + '" title="' + withKeys('Close tab ({Alt+W})') + '"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg></span></div>').join('');

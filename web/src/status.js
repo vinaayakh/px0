@@ -17,7 +17,7 @@ export function updateStatus() {
   }
 
   // Markdown and CSV/TSV tabs share the preview switch; only its label differs.
-  const kind = previewKind(d), isMd = !!kind, shown = previewing(d);
+  const kind = previewKind(d), isMd = !!kind && kind !== 'virtual', shown = previewing(d);
   const label = kind === 'table' ? 'Table' : 'Preview';
   const mdBtn = $('[data-action="md-preview"]');
   if (mdBtn) {
@@ -35,7 +35,7 @@ export function updateStatus() {
     for (const b of sw.children) b.classList.toggle('on', isMd && (b.dataset.md === 'preview') === shown);
   }
 
-  const isCode = d && !d.isImage;
+  const isCode = d && !d.isImage && !d.virtual;
   const inGit = !!S.meta?.git;
   const hasDiff = !!(d && d.diffAvailable);
   const isDiffOn = !!(d && d.diffMode);

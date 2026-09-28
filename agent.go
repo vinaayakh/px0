@@ -39,9 +39,16 @@ const (
 // of these starts an interactive session by default and would sit forever
 // waiting for approval, so every preset carries the flag that turns that off
 // and the one that lets it apply edits without asking.
+//
+// ReadOnlyArgs is the argv for a run that must not touch the working tree (an
+// AI review): file-writing tools off, reads allowed, and {tmpdir} granted as
+// an extra readable directory where the harness supports that. A preset
+// without it cannot run read-only jobs; the worktree snapshot taken around
+// every run is only the backstop, never the sole guard.
 type agentPreset struct {
 	Name         string
 	Args         []string
+	ReadOnlyArgs []string
 	ModelFlag    string
 	DefaultModel string
 	Models       []string
@@ -49,8 +56,14 @@ type agentPreset struct {
 
 var agentPresets = []agentPreset{
 	{
-		Name:         "claude",
-		Args:         []string{"claude", "--permission-mode", "acceptEdits", "-p", "{prompt}"},
+		Name: "claude",
+		Args: []string{"claude", "--permission-mode", "acceptEdits", "-p", "{prompt}"},
+		// Print mode denies any tool that would need approval, so with the
+		// write tools disallowed outright Bash is refused too unless the user
+		// allowlisted a command, which the snapshot backstop then catches.
+		ReadOnlyArgs: []string{"claude", "--permission-mode", "default",
+			"--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit",
+			"--add-dir", "{tmpdir}", "-p", "{prompt}"},
 		ModelFlag:    "--model",
 		DefaultModel: "haiku",
 		Models:       []string{"haiku", "sonnet", "opus"},
@@ -117,6 +130,7 @@ var agentPresets = []agentPreset{
 	{
 		Name:         "codex",
 		Args:         []string{"codex", "exec", "--ask-for-approval", "never", "{prompt}"},
+		ReadOnlyArgs: []string{"codex", "exec", "--ask-for-approval", "never", "--sandbox", "read-only", "{prompt}"},
 		ModelFlag:    "-m",
 		DefaultModel: "gpt-5-codex",
 		Models: []string{
@@ -328,6 +342,7 @@ type agentHarness struct {
 	Path      string   `json:"path,omitempty"`
 	Models    []string `json:"models,omitempty"`
 	Model     string   `json:"model,omitempty"`
+	ReadOnly  bool     `json:"readOnly,omitempty"` // can run read-only jobs (AI review)
 }
 
 // agentRange anchors a range on a file for overlap checks.
@@ -364,13 +379,17 @@ type agentJob struct {
 	ThreadID   string           `json:"threadId,omitempty"`   // The thread this edit runs as, when it runs as one
 	BatchCount int              `json:"batchCount,omitempty"` // Number of items in batch review edit
 	Items      []agentBatchItem `json:"items,omitempty"`      // Detailed batch items if multi-file edit
+	ReadOnly   bool             `json:"readOnly,omitempty"`   // Ran with the preset's read-only argv (StartReview)
+	Tainted    bool             `json:"tainted,omitempty"`    // A read-only run changed the working tree anyway
 
-	ranges []agentRange
-	l1, l2 int
-	cancel context.CancelFunc
-	out    *tailBuffer
-	stderr *tailBuffer
-	start  time.Time
+	ranges  []agentRange
+	l1, l2  int
+	timeout time.Duration // 0 means agentTimeout
+	tmpdir  string        // substituted for {tmpdir} in the argv
+	cancel  context.CancelFunc
+	out     *tailBuffer
+	stderr  *tailBuffer
+	start   time.Time
 }
 
 var (
@@ -505,24 +524,7 @@ func resolveAgentSpec(spec, model string) (string, []string, string, error) {
 			if chosenModel == "" {
 				chosenModel = p.DefaultModel
 			}
-			promptIdx := -1
-			for i, arg := range p.Args {
-				if arg == "{prompt}" {
-					promptIdx = i
-					break
-				}
-			}
-			args = make([]string, 0, len(p.Args)+2)
-			insertIdx := promptIdx
-			if promptIdx > 0 && strings.HasPrefix(p.Args[promptIdx-1], "-") {
-				insertIdx = promptIdx - 1
-			}
-			for i, arg := range p.Args {
-				if i == insertIdx && p.ModelFlag != "" && chosenModel != "" {
-					args = append(args, p.ModelFlag, chosenModel)
-				}
-				args = append(args, arg)
-			}
+			args = presetArgv(p, p.Args, chosenModel)
 			break
 		}
 	}
@@ -551,6 +553,65 @@ func resolveAgentSpec(spec, model string) (string, []string, string, error) {
 	resolved := append([]string(nil), args...)
 	resolved[0] = bin
 	return name, resolved, chosenModel, nil
+}
+
+// presetArgv splices the model flag into a preset's argv template just before
+// the prompt (or before the flag that introduces it, e.g. "-p {prompt}").
+func presetArgv(p agentPreset, tmpl []string, model string) []string {
+	promptIdx := -1
+	for i, arg := range tmpl {
+		if arg == "{prompt}" {
+			promptIdx = i
+			break
+		}
+	}
+	args := make([]string, 0, len(tmpl)+2)
+	insertIdx := promptIdx
+	if promptIdx > 0 && strings.HasPrefix(tmpl[promptIdx-1], "-") {
+		insertIdx = promptIdx - 1
+	}
+	for i, arg := range tmpl {
+		if i == insertIdx && p.ModelFlag != "" && model != "" {
+			args = append(args, p.ModelFlag, model)
+		}
+		args = append(args, arg)
+	}
+	return args
+}
+
+// errAgentNoReadOnly refuses a read-only job on a harness px0 has no verified
+// read-only flags for (a custom command template, or a preset without
+// ReadOnlyArgs).
+var errAgentNoReadOnly = errors.New("the selected harness has no read-only mode px0 can enforce")
+
+// readOnlyArgv resolves the read-only argv for the harness currently selected,
+// with its binary path and model, or errAgentNoReadOnly.
+func (m *agentManager) readOnlyArgv() (name string, args []string, err error) {
+	m.mu.Lock()
+	name, model, hasArgs := m.selected, m.models[m.selected], m.args != nil
+	var bin string
+	if hasArgs {
+		bin = m.args[0]
+	}
+	m.mu.Unlock()
+	if !hasArgs {
+		return "", nil, errAgentNone
+	}
+	for _, p := range agentPresets {
+		if p.Name != name {
+			continue
+		}
+		if len(p.ReadOnlyArgs) == 0 {
+			return name, nil, errAgentNoReadOnly
+		}
+		if model == "" {
+			model = p.DefaultModel
+		}
+		args = presetArgv(p, p.ReadOnlyArgs, model)
+		args[0] = bin
+		return name, args, nil
+	}
+	return name, nil, errAgentNoReadOnly
 }
 
 func agentPresetNames() []string {
@@ -592,6 +653,7 @@ func (m *agentManager) Detect() []agentHarness {
 			Path:      bin,
 			Models:    models,
 			Model:     curModel,
+			ReadOnly:  len(p.ReadOnlyArgs) > 0,
 		}
 		out = append(out, h)
 	}
@@ -984,6 +1046,83 @@ func (m *agentManager) StartPrompt(label, prompt string) (*agentJob, error) {
 	return m.Job(job.ID), nil
 }
 
+// reviewJobOpts sizes a read-only job. Zero values fall back to the edit
+// defaults (agentLogBytes, agentTimeout).
+type reviewJobOpts struct {
+	OutBytes int           // stdout/stderr tail kept for parsing
+	Timeout  time.Duration // hard limit on the run
+	TmpDir   string        // outside the worktree; the harness may read it
+}
+
+// StartReview dispatches a one-shot prompt with the selected harness's
+// read-only argv. It refuses a harness px0 cannot run read-only rather than
+// fall back to the edit preset. Like StartPrompt it takes no file range, so it
+// neither blocks nor is blocked by an edit; if the harness writes to the
+// working tree anyway, run() marks the job Tainted and leaves the files as
+// they are for the user to inspect.
+func (m *agentManager) StartReview(label, prompt string, opts reviewJobOpts) (*agentJob, error) {
+	name, args, err := m.readOnlyArgv()
+	if err != nil {
+		uiStatus("err", "agent", "review dispatch refused: "+err.Error(), 0, os.Stdout)
+		return nil, err
+	}
+	outBytes := opts.OutBytes
+	if outBytes <= 0 {
+		outBytes = agentLogBytes
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = agentTimeout
+	}
+	m.mu.Lock()
+	m.seq++
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	job := &agentJob{
+		ID:       m.seq,
+		Harness:  name,
+		Path:     label,
+		Running:  true,
+		Changed:  []string{},
+		Tracked:  gitAvailable(m.root),
+		ReadOnly: true,
+		out:      &tailBuffer{max: outBytes},
+		stderr:   &tailBuffer{max: agentLogBytes},
+		start:    time.Now(),
+		cancel:   cancel,
+		timeout:  timeout,
+		tmpdir:   opts.TmpDir,
+	}
+	if m.jobs == nil {
+		m.jobs = map[int64]*agentJob{}
+	}
+	m.jobs[job.ID] = job
+	m.mu.Unlock()
+
+	uiStatus("step", "agent", fmt.Sprintf("#%d %s · %s (read-only)", job.ID, name, label), 0, os.Stdout)
+
+	go m.run(ctx, cancel, job, args, prompt)
+	return m.Job(job.ID), nil
+}
+
+// expandArgv fills the {prompt} and {tmpdir} placeholders of an argv template.
+// {tmpdir} is substituted first so a prompt that happens to contain the
+// literal text is left alone. With no tmpdir, a bare {tmpdir} argument is
+// dropped along with the flag introducing it ("--add-dir {tmpdir}").
+func expandArgv(template []string, prompt, tmpdir string) []string {
+	args := make([]string, 0, len(template))
+	for _, tok := range template {
+		if tok == "{tmpdir}" && tmpdir == "" {
+			if n := len(args); n > 0 && strings.HasPrefix(args[n-1], "-") {
+				args = args[:n-1]
+			}
+			continue
+		}
+		tok = strings.ReplaceAll(tok, "{tmpdir}", tmpdir)
+		args = append(args, strings.ReplaceAll(tok, "{prompt}", prompt))
+	}
+	return args
+}
+
 func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *agentJob, template []string, prompt string) {
 	defer cancel()
 	defer func() {
@@ -1002,10 +1141,7 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 
 	before := worktreeSnapshot(m.root)
 
-	args := make([]string, len(template))
-	for i, tok := range template {
-		args[i] = strings.ReplaceAll(tok, "{prompt}", prompt)
-	}
+	args := expandArgv(template, prompt, job.tmpdir)
 
 	stdoutStreamer := newLineStreamer(job.out, uiFaint("│", os.Stdout), os.Stdout)
 	stderrStreamer := newLineStreamer(job.stderr, uiDim("│", os.Stdout), os.Stdout)
@@ -1026,16 +1162,27 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 		if errors.Is(ctx.Err(), context.Canceled) {
 			err = errors.New("cancelled")
 		} else {
-			err = fmt.Errorf("gave up after %s", agentTimeout)
+			timeout := job.timeout
+			if timeout <= 0 {
+				timeout = agentTimeout
+			}
+			err = fmt.Errorf("gave up after %s", timeout)
 		}
 	}
 
 	changed := changedSince(m.root, before)
 	m.settle(changed)
+	if job.ReadOnly && len(changed) > 0 {
+		// px0 never reverts: the files stay as the harness left them, and the
+		// UI shows the run as tainted so the reviewer can inspect them.
+		uiStatus("err", "agent", fmt.Sprintf("#%d %s changed %d file(s) during a read-only run: %s",
+			job.ID, job.Harness, len(changed), strings.Join(changed, ", ")), 0, os.Stdout)
+	}
 
 	m.mu.Lock()
 	job.Running = false
 	job.Changed = changed
+	job.Tainted = job.ReadOnly && len(changed) > 0
 	job.Ms = time.Since(job.start).Milliseconds()
 	if err != nil {
 		job.Error = err.Error()

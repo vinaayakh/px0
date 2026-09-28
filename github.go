@@ -78,6 +78,76 @@ func (g *GitHubProvider) ReplyToReviewComment(ctx context.Context, target PRTarg
 	return replyToReviewComment(ctx, target.Owner, target.Repo, target.Number, token, commentID, body)
 }
 
+// ListPRs is implemented with the inbox (M3); the interface is in place so
+// the handler and UI can be built against it.
+func (g *GitHubProvider) ListPRs(ctx context.Context, token, query string) ([]PRSummary, error) {
+	return nil, errProviderUnsupported
+}
+
+// FetchConversation is implemented with the Conversation tab (M2).
+func (g *GitHubProvider) FetchConversation(ctx context.Context, target PRTarget, token string) (PRConversation, error) {
+	return PRConversation{}, errProviderUnsupported
+}
+
+const githubGraphQLURL = githubAPIBase + "/graphql"
+
+// githubGraphQL runs one GraphQL query and decodes its "data" into out. A
+// response carrying "errors" fails with the first message even when partial
+// data came back: every caller needs the whole result, and a half-filled
+// timeline or inbox would read as the truth. GraphQL requires a token.
+func githubGraphQL(ctx context.Context, token, query string, vars map[string]any, out any) error {
+	if token == "" {
+		return fmt.Errorf("github: graphql needs a token")
+	}
+	resp, err := githubRequest(ctx, http.MethodPost, githubGraphQLURL, token, map[string]any{
+		"query":     query,
+		"variables": vars,
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("github: graphql: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	return decodeGraphQL(b, out)
+}
+
+// decodeGraphQL splits a GraphQL response body into its data and errors.
+func decodeGraphQL(b []byte, out any) error {
+	var env struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return fmt.Errorf("github: graphql: %w", err)
+	}
+	if len(env.Errors) > 0 {
+		msg := env.Errors[0].Message
+		if env.Errors[0].Type != "" {
+			msg = env.Errors[0].Type + ": " + msg
+		}
+		if len(env.Errors) > 1 {
+			msg += fmt.Sprintf(" (and %d more)", len(env.Errors)-1)
+		}
+		return fmt.Errorf("github: graphql: %s", msg)
+	}
+	if len(env.Data) == 0 || string(env.Data) == "null" {
+		return fmt.Errorf("github: graphql: empty response")
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(env.Data, out)
+}
+
 // resolveGitHubToken looks for a token in order: the explicit px0 setting
 // (github.token), the GITHUB_TOKEN environment variable, GH_TOKEN, then the gh CLI
 // if installed and logged in. An empty return means PR review stays read-only.
@@ -173,16 +243,32 @@ func fetchPRMeta(ctx context.Context, owner, repo string, num int, token string)
 		}
 		return PRMeta{}, fmt.Errorf("github: fetch PR #%d: %s: %s", num, resp.Status, bodyMsg)
 	}
+	return parsePRMeta(resp.Body, owner, repo)
+}
+
+// parsePRMeta decodes a REST pulls/{n} response into PRMeta.
+func parsePRMeta(r io.Reader, owner, repo string) (PRMeta, error) {
+	type login struct {
+		Login string `json:"login"`
+	}
 	var out struct {
-		Number   int    `json:"number"`
-		Title    string `json:"title"`
-		State    string `json:"state"`
-		Merged   bool   `json:"merged"`
-		MergedAt string `json:"merged_at"`
-		Draft    bool   `json:"draft"`
-		User     struct {
-			Login string `json:"login"`
-		} `json:"user"`
+		Number         int     `json:"number"`
+		Title          string  `json:"title"`
+		Body           string  `json:"body"`
+		State          string  `json:"state"`
+		Merged         bool    `json:"merged"`
+		MergedAt       string  `json:"merged_at"`
+		Draft          bool    `json:"draft"`
+		MergeableState string  `json:"mergeable_state"`
+		User           login   `json:"user"`
+		Assignees      []login `json:"assignees"`
+		Requested      []login `json:"requested_reviewers"`
+		RequestedTeams []struct {
+			Slug string `json:"slug"`
+		} `json:"requested_teams"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 		Base struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
@@ -195,55 +281,131 @@ func fetchPRMeta(ctx context.Context, owner, repo string, num int, token string)
 			} `json:"repo"`
 		} `json:"head"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(r).Decode(&out); err != nil {
 		return PRMeta{}, err
 	}
 	m := PRMeta{
-		Number:           out.Number,
-		Title:            out.Title,
-		Author:           out.User.Login,
-		State:            out.State,
-		Merged:           out.Merged || out.MergedAt != "",
-		MergedAt:         out.MergedAt,
-		Draft:            out.Draft,
-		BaseRef:          out.Base.Ref,
-		HeadRef:          out.Head.Ref,
-		HeadSHA:          out.Head.SHA,
-		HeadRepoCloneURL: out.Head.Repo.CloneURL,
+		Number:             out.Number,
+		Title:              out.Title,
+		Author:             out.User.Login,
+		State:              out.State,
+		Merged:             out.Merged || out.MergedAt != "",
+		MergedAt:           out.MergedAt,
+		Draft:              out.Draft,
+		BaseRef:            out.Base.Ref,
+		HeadRef:            out.Head.Ref,
+		HeadSHA:            out.Head.SHA,
+		HeadRepoCloneURL:   out.Head.Repo.CloneURL,
+		Body:               out.Body,
+		Mergeable:          strings.ToLower(out.MergeableState),
+		Labels:             []string{},
+		Assignees:          []string{},
+		RequestedReviewers: []string{},
 	}
 	m.HeadIsFork = out.Head.Repo.FullName != "" && !strings.EqualFold(out.Head.Repo.FullName, owner+"/"+repo)
+	for _, l := range out.Labels {
+		m.Labels = append(m.Labels, l.Name)
+	}
+	for _, a := range out.Assignees {
+		m.Assignees = append(m.Assignees, a.Login)
+	}
+	for _, u := range out.Requested {
+		m.RequestedReviewers = append(m.RequestedReviewers, u.Login)
+	}
+	for _, t := range out.RequestedTeams {
+		m.RequestedReviewers = append(m.RequestedReviewers, owner+"/"+t.Slug)
+	}
 	return m, nil
 }
 
 // prComment is a review comment held in memory only for the life of the
 // process (pr.go's prSession) until submitReview posts it. Side matches
 // GitHub's review-comment API: "LEFT" (the base) or "RIGHT" (the PR head).
+//
+// Origin and Status let AI suggestions (review.go) sit in the same list as the
+// reviewer's own drafts: a suggestion starts "pending" and only an explicit
+// accept or edit makes it submittable. A human draft is created "accepted".
+// An empty Status (drafts restored from an older session file) counts as
+// accepted.
 type prComment struct {
-	ID   int64  `json:"id"`
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Side string `json:"side"`
-	Body string `json:"body"`
+	ID        int64  `json:"id"`
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Side      string `json:"side"`
+	StartLine int    `json:"startLine,omitempty"` // first line of a multi-line range, same side as Line
+	Body      string `json:"body"`
+
+	Origin      string `json:"origin,omitempty"`      // "human" or "ai"
+	Status      string `json:"status,omitempty"`      // "pending", "accepted", "edited", "dismissed"
+	RunID       int64  `json:"runId,omitempty"`       // the AI review run that produced it
+	Fingerprint string `json:"fingerprint,omitempty"` // path + quote + body hash, for dismiss memory
+	// SubjectType "file" marks a comment on the file as a whole (Line is then
+	// only a hint), used when an AI anchor could not be placed on a diff line.
+	SubjectType string `json:"subjectType,omitempty"`
+}
+
+const (
+	prOriginHuman = "human"
+	prOriginAI    = "ai"
+
+	prStatusPending   = "pending"
+	prStatusAccepted  = "accepted"
+	prStatusEdited    = "edited"
+	prStatusDismissed = "dismissed"
+)
+
+// submittable reports whether c goes out with the next review: a human draft,
+// or an AI suggestion the reviewer accepted or edited.
+func (c prComment) submittable() bool {
+	switch c.Status {
+	case "", prStatusAccepted, prStatusEdited:
+		return true
+	}
+	return false
 }
 
 // submitReview posts one review carrying every draft comment plus an overall
 // verdict in a single call, mirroring GitHub's own draft-then-submit model
-// so px0 never needs a per-comment endpoint.
+// so px0 never needs a per-comment endpoint. Callers pass only submittable
+// comments.
+//
+// The create-review endpoint anchors every comment to a line, so file-level
+// comments are folded into the review body under their path instead, which
+// GitHub always accepts.
 func submitReview(ctx context.Context, owner, repo string, num int, token, commitID string, comments []prComment, event, body string) error {
 	type reviewComment struct {
-		Path string `json:"path"`
-		Line int    `json:"line"`
-		Side string `json:"side"`
-		Body string `json:"body"`
+		Path      string `json:"path"`
+		Line      int    `json:"line"`
+		Side      string `json:"side"`
+		StartLine int    `json:"start_line,omitempty"`
+		StartSide string `json:"start_side,omitempty"`
+		Body      string `json:"body"`
 	}
 	payload := struct {
 		CommitID string          `json:"commit_id,omitempty"`
 		Body     string          `json:"body,omitempty"`
 		Event    string          `json:"event"`
 		Comments []reviewComment `json:"comments,omitempty"`
-	}{CommitID: commitID, Body: body, Event: event}
+	}{CommitID: commitID, Event: event}
+	var fileNotes []string
 	for _, c := range comments {
-		payload.Comments = append(payload.Comments, reviewComment{Path: c.Path, Line: c.Line, Side: c.Side, Body: c.Body})
+		if c.SubjectType == "file" {
+			fileNotes = append(fileNotes, fmt.Sprintf("**`%s`**\n\n%s", c.Path, c.Body))
+			continue
+		}
+		rc := reviewComment{Path: c.Path, Line: c.Line, Side: c.Side, Body: c.Body}
+		if c.StartLine > 0 && c.StartLine < c.Line {
+			rc.StartLine, rc.StartSide = c.StartLine, c.Side
+		}
+		payload.Comments = append(payload.Comments, rc)
+	}
+	payload.Body = body
+	if len(fileNotes) > 0 {
+		parts := append([]string{}, fileNotes...)
+		if strings.TrimSpace(body) != "" {
+			parts = append([]string{body}, parts...)
+		}
+		payload.Body = strings.Join(parts, "\n\n---\n\n")
 	}
 	resp, err := githubRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, num), token, payload)
 	if err != nil {
