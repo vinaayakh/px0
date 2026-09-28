@@ -88,9 +88,21 @@ The client keeps the focused commits' own segments at full colour and everything
 
 The graph works fully in a normal workspace. In a PR session whose checkout is a worktree of the local clone it shows that clone's refs. A PR checked out as a fresh single-branch clone has little history; the tab says so.
 
-## 9. Not Yet Done
+## 9. Commit Inspector, Search, Cleanup and Live Refresh
 
-- Commit inspector with changed files and per-file diffs (GRF-7).
-- Commit search (GRF-8).
-- Copy-command cleanup helpers for merged, gone and stale branches (GRF-9).
-- Refreshing when the git watcher sees refs move (GRF-10); a stale page is already detected and reloaded on the next request.
+Source: [`graph_commit.go`](../../graph_commit.go).
+
+**Inspector.** Clicking a row (not a lane or a pill) opens the commit in a pane on the right: subject and body, author and committer, parents (each clickable), refs, and the changed files with their status and added/removed lines. The list is one `git diff-tree -r -M --raw --numstat -z` against the first parent, or against the empty tree for a root commit; a merge therefore shows what it brought in relative to its first parent. (`--name-status` cannot be combined with `--numstat` that way: git prints only one of the two, so `--raw` supplies the status.) Clicking a file expands its diff below it (`GET /api/graph/diff?sha=&path=&old=`, with the old path for a rename, capped at 2 MB).
+
+**Search.** The search box finds commits whose subject or author contains the text (any case) or whose hash starts with it. `GET /api/graph/search?q=` reads the rest of history first (up to 300,000 commits) so a match far below the loaded pages is found, and returns up to 1,000 row indices. Matching rows are highlighted; Enter and Shift+Enter (or the arrows) step through them, loading pages up to the match. Commit bodies are not searched.
+
+**Cleanup.** Merged, gone, stale and squash-merged branches get a **Copy delete** button: `git branch -d <name>` for a merged or gone local branch (git refuses if anything is unmerged), `git branch -D <name>` for a stale or squash-merged one (the title says it force-deletes), and `git push <remote> --delete <branch>` for a remote branch. The checked-out branch never gets one. px0 copies the command; it never runs it.
+
+**Live refresh.** `gitstream.js` emits `git:status` whenever the git watcher's snapshot changes (a commit, checkout, fetch or pull, including in a terminal). The Graph tab then asks `GET /api/graph/sig` (one `for-each-ref`) and, when the refs moved, reloads in place: the scroll position stays, the pages the view needs are read again, and the focus and search are re-applied. A hidden Graph tab only notes that it may be stale and checks when it is shown again.
+
+| Method and path | Returns |
+| --- | --- |
+| `GET /api/graph/commit?sha=` | `{sha, parents, author, email, date, committer, committerDate, message, refs, files: [{path, oldPath, status, added, deleted}], against}` |
+| `GET /api/graph/diff?sha=&path=[&old=]` | `{diff, truncated}` |
+| `GET /api/graph/search?q=&sig=` | `{matches, complete, capped}` or `{reset}` |
+| `GET /api/graph/sig` | `{sig}` |

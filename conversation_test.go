@@ -156,7 +156,10 @@ func TestFetchConversationStopsAtPageLimit(t *testing.T) {
 	endless := strings.Replace(convTimelinePage2, `"hasNextPage": false`, `"hasNextPage": true`, 1)
 	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		atomic.AddInt32(&calls, 1)
-		b, _ := io.ReadAll(req.Body)
+		var b []byte
+		if req.Body != nil {
+			b, _ = io.ReadAll(req.Body)
+		}
 		resp := convThreadsPage
 		if strings.Contains(string(b), "timelineItems") {
 			resp = endless

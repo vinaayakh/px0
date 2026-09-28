@@ -20,6 +20,8 @@ let rvSelId = 0;          // selected suggestion id
 let rvEditId = 0;         // suggestion being edited
 let rvPollTimer = 0;
 let rvPrefilled = 0;      // run id whose summary was already offered to the form
+let rvStale = 0;          // pending suggestions made against an older head
+let rvHeadMoved = false;  // GitHub has a newer head than this checkout
 const rvExpanded = new Set(); // low-confidence ids the reviewer opened
 
 const RV_SEV_RANK = { blocker: 0, major: 1, minor: 2, nit: 3 };
@@ -51,7 +53,9 @@ export function initReview() {
   });
   $('#rv-alert')?.addEventListener('click', e => {
     if (e.target.closest('[data-rv-retry]')) rvStart();
+    if (e.target.closest('[data-rv-recheck]')) rvRecheck();
   });
+  on('pr:refreshed', rvLoad); // a Pull moved the head: suggestions may be stale now
   const list = $('#rv-list');
   list?.addEventListener('click', rvOnClick);
   list?.addEventListener('keydown', rvOnKey);
@@ -73,6 +77,8 @@ async function rvLoad() {
   const wasRunning = rvRun?.status === 'running';
   rvRun = j.run || null;
   rvItems = j.suggestions || [];
+  rvStale = j.stale || 0;
+  rvHeadMoved = !!(j.remoteHead && j.remoteHead !== j.head);
   rvRender();
   if (rvRun?.status === 'running') {
     rvSchedulePoll();
@@ -123,11 +129,25 @@ async function rvCancel() {
   rvLoad();
 }
 
+async function rvRecheck() {
+  try {
+    const j = await apiPostJson('/api/pr/review/revalidate', {});
+    const c = j.counts || {};
+    const n = Object.values(c).reduce((a, b) => a + b, 0);
+    showToast('✓', n ? `Re-checked ${n} suggestion${n === 1 ? '' : 's'} against the current diff` : 'Nothing to re-check');
+  } catch (e) {
+    showToast('!', e.message || 'Could not re-check the suggestions');
+  }
+  await rvLoad();
+  renderPRMarkers();
+}
+
 async function rvTriage(ids, action, body) {
   try {
     const j = await apiPostJson('/api/pr/review/triage', { ids, action, body: body || '' });
     const byId = new Map((j.suggestions || []).map(s => [s.id, s]));
     rvItems = rvItems.map(s => byId.get(s.id) || s);
+    if (j.staleRefused) showToast('!', j.staleRefused + ' stale suggestion' + (j.staleRefused === 1 ? ' was' : 's were') + ' skipped: re-check them first');
   } catch (e) {
     showToast('!', e.message || 'Could not update the suggestion');
     return;
@@ -184,7 +204,7 @@ function rvRenderRun() {
   if (status) {
     if (!h.name) status.textContent = 'Choose a coding harness first.';
     else if (!h.readOnly && !running) status.textContent = h.name + ' has no read-only mode px0 can enforce; pick claude or codex.';
-    else if (running) status.textContent = 'Reviewing with ' + (r.harness || h.name) + '… ' + rvElapsed(r);
+    else if (running) status.textContent = 'Reviewing with ' + (r.harness || h.name) + 'â€¦ ' + rvElapsed(r);
     else if (r?.status === 'done') status.textContent = rvCountsText(r);
     else if (r?.status === 'cancelled') status.textContent = 'Cancelled.';
     else status.textContent = '';
@@ -193,6 +213,12 @@ function rvRenderRun() {
   const alert = $('#rv-alert');
   if (alert) {
     let html = '';
+    if (rvStale) {
+      html += '<div class="rv-alert-item rv-alert-taint"><b>' + rvStale + ' suggestion' + (rvStale === 1 ? ' was' : 's were') + ' made against an older head.</b> ' +
+        (rvHeadMoved ? 'The PR has new commits on GitHub: Pull them in the git panel, then re-check. '
+          : 'Their lines may have moved, so they cannot be accepted until they are checked against the current diff. ') +
+        '<button class="opt" type="button" data-rv-recheck' + (rvHeadMoved ? ' disabled' : '') + '>Re-check</button></div>';
+    }
     if (r?.tainted) {
       html += '<div class="rv-alert-item rv-alert-taint"><b>The harness changed files during a read-only review:</b> ' +
         esc((r.changed || []).join(', ')) + '. px0 did not revert them. Check the working tree before trusting this run.</div>';
@@ -224,7 +250,7 @@ function rvRenderRun() {
         const b = $('#pr-review-body');
         if (b) b.value = '';
         prefillReview(r.summary, r.verdict);
-        showToast('✓', 'Summary copied into the review form');
+        showToast('âœ“', 'Summary copied into the review form');
       });
     }
   }
@@ -239,6 +265,7 @@ function rvCountsText(r) {
   if (c.reanchored) parts.push(c.reanchored + ' re-anchored');
   if (c.file) parts.push(c.file + ' file-level');
   if (c.summary) parts.push(c.summary + ' for the summary');
+  if (c.repeat) parts.push(c.repeat + ' already decided, hidden');
   return total + ' suggestion' + (total === 1 ? '' : 's') + ': ' + parts.join(', ') + '.';
 }
 
@@ -252,7 +279,7 @@ function rvVisible() {
 function rvLocLabel(s) {
   if (s.subjectType === 'summary') return 'not in this PR';
   if (s.subjectType === 'file') return 'whole file' + (s.ai?.reportedLine ? ' (L' + s.ai.reportedLine + ')' : '');
-  const range = s.startLine ? 'L' + s.startLine + '–' + s.line : 'L' + s.line;
+  const range = s.startLine ? 'L' + s.startLine + 'â€“' + s.line : 'L' + s.line;
   return range + (s.side === 'LEFT' ? ' (base)' : '');
 }
 
@@ -275,6 +302,7 @@ function rvItemHtml(s) {
       (ai.category ? '<span class="rv-cat">' + esc(ai.category) + '</span>' : '') +
       '<span class="rv-loc" data-rv-jump title="Open this line in the diff">' + esc(rvLocLabel(s)) + '</span>' +
       (anchor ? '<span class="rv-anchor rv-anchor-' + esc(ai.anchor) + '" title="' + esc(anchorTitle) + '">' + esc(anchor) + '</span>' : '') +
+      (ai.stale ? '<span class="rv-anchor rv-anchor-file" title="Made against an older PR head: re-check before accepting">stale</span>' : '') +
       '<span class="grow"></span>' +
       '<span class="rv-conf" title="Model confidence">' + Math.round((ai.confidence ?? 0) * 100) + '%</span>' +
       (s.status !== 'pending' ? '<span class="rv-status-chip">' + esc(s.status) + '</span>' : '') +
@@ -314,7 +342,7 @@ function rvRenderList() {
   const items = rvVisible();
   if (!items.length) {
     const any = rvItems.length;
-    list.innerHTML = '<div class="hint">' + (rvRun?.status === 'running' ? 'Waiting for the review…'
+    list.innerHTML = '<div class="hint">' + (rvRun?.status === 'running' ? 'Waiting for the reviewâ€¦'
       : any ? 'Nothing pending. Accepted suggestions are in your drafts; switch to All to see everything.'
         : 'Run an AI review to get suggested comments. Nothing is posted until you accept a suggestion and submit the review.') + '</div>';
     return;

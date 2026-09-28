@@ -20,10 +20,10 @@ See full performance benchmarks and comparisons at [px0.ai/#bench](https://px0.a
 ## Features
 
 - GitHub PR reviews & Git panel: Review pull requests directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline review comments, and stage, commit, or push from the browser.
-- Commit graph: Every branch and tag as a lane graph that stays smooth on 100k-commit repositories, with branches sorted into active, stale, upstream gone, merged, squash merged and orphan. Click a branch or any lane (even a deleted branch's) to highlight its commits, fork point and merge.
-- PR inbox: The Pull Requests view lists PRs waiting on your review, your own, and this repository's, with CI and review state; one click opens a PR in its own review session, and a second click brings that session back.
-- PR Conversation tab: The description, reviews, threads, commits and events in one timeline, as on GitHub, with replies and new comments.
-- AI draft review: Run a review skill through Claude Code or Codex, read-only, and get line-anchored suggestions checked against the real diff. Accept (`A`), edit (`E`) or dismiss (`D`) each one; only accepted ones are posted, under your name.
+- Commit graph: Every branch and tag as a lane graph that stays smooth on 100k-commit repositories, with branches sorted into active, stale, upstream gone, merged, squash merged and orphan (and a copyable delete command for the ones worth cleaning up). Click a branch or any lane (even a deleted branch's) to highlight its commits, fork point and merge; click a commit for its message and per-file diffs; search by message, author or hash. It refreshes by itself when refs move.
+- PR inbox: The Pull Requests view (or `px0 inbox`, no workspace needed) lists PRs waiting on your review, your own, and this repository's, with CI and review state, a filter and sort; one click opens a PR in its own review session, and a second click brings that session back.
+- PR Conversation tab: The description, checks, reviews, threads, commits and events in one timeline, as on GitHub, with replies, new comments, and resolving threads.
+- AI draft review: Run a review skill through Claude Code or Codex, read-only, and get line-anchored suggestions checked against the real diff. Accept (`A`), edit (`E`) or dismiss (`D`) each one; only accepted ones are posted, under your name. A re-run hides what you already decided, and suggestions made before the PR moved are re-checked before they can be accepted.
 - AI coding harness integration: Dispatch edits directly to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose with live reloading.
 - Fast navigation: Fuzzy file search, symbol outline, and workspace regex search in milliseconds.
 - Tab management: Right-click a file tab to close it, close all tabs, close other tabs, or close tabs to its left or right.
@@ -66,6 +66,9 @@ px0 main.go:42
 
 # Review a GitHub pull request
 px0 https://github.com/owner/repo/pull/123
+
+# Pull requests waiting on you, without opening a workspace
+px0 inbox
 
 # Remote or headless server mode
 px0 -host 0.0.0.0 -port 7777 ~/workspace

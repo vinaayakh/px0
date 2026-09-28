@@ -86,7 +86,9 @@ func TestSubmitReviewRangesAndFileComments(t *testing.T) {
 	defer func() { githubHTTPClient.Transport = orig }()
 	var captured []byte
 	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		captured, _ = io.ReadAll(req.Body)
+		if req.Body != nil {
+			captured, _ = io.ReadAll(req.Body)
+		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 	})
 
@@ -130,7 +132,9 @@ func TestPRSubmitSendsOnlyAcceptedAndKeepsPending(t *testing.T) {
 	defer func() { githubHTTPClient.Transport = orig }()
 	var captured []byte
 	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		captured, _ = io.ReadAll(req.Body)
+		if req.Body != nil {
+			captured, _ = io.ReadAll(req.Body)
+		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 	})
 

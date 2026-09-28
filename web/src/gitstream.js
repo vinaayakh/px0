@@ -5,6 +5,7 @@ import { syncDiffView } from './diff.js';
 import { render } from './renderer.js';
 import { updateStatus, updateMetricsDisplay } from './status.js';
 import { updateGitPanel } from './gitpanel.js';
+import { emit } from './bus.js';
 
 let eventSource = null;
 let reconnectTimer = null;
@@ -125,6 +126,7 @@ async function handleGitStatus(data) {
     return;
   }
   lastSig = sig;
+  emit('git:status', data); // e.g. the Graph tab re-checks whether refs moved
 
   if (data.gitChanges !== undefined) S.meta.gitChanges = data.gitChanges;
   if (data.gitFiles !== undefined) S.meta.gitFiles = data.gitFiles;

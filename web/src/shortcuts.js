@@ -47,6 +47,8 @@ export const SHORTCUTS = [
   [['Alt+T'], 'Start a thread on the selection'],
   [['J', 'K'], 'AI Review pane: next / previous suggestion'],
   [['A', 'E', 'D'], 'AI Review pane: accept / edit / dismiss'],
+  [['Enter', 'Shift+Enter'], 'Graph search: next / previous commit'],
+  [['Esc'], 'Graph: clear the branch focus'],
   [['Right click'], 'Selection actions at the pointer'],
   [['Mod+Home|Mod+Up', 'Mod+End|Mod+Down'], 'Top / bottom of file'],
   [['Home|Mod+Left', 'End|Mod+Right'], 'Start / end of line'],

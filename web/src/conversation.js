@@ -24,12 +24,15 @@ let cvLoadedAt = 0;
 let cvPending = null;  // in-flight load
 const cvOpened = new Set(); // collapsed-by-default threads the reviewer opened
 const cvClosed = new Set(); // open-by-default threads the reviewer closed
+let cvPendingReveal = null; // {path, side, line} to scroll to on the next draw
 
 export function initConversation() {
   if (!S.meta?.pr) return;
   registerVirtualTab('pr', { title: () => 'Conversation', pinned: true, render: cvRender });
   on('pr:submitted', () => cvRefresh(true));
   on('pr:refreshed', () => cvRefresh(true));
+  // A gutter badge on a posted thread (pr.js) lands here.
+  on('conversation:reveal', target => { cvPendingReveal = target; const a = cvArticle(); if (a && cvData) cvDraw(a); });
 }
 
 /* ---------- data ---------- */
@@ -138,7 +141,15 @@ function cvDraw(article) {
   }
   const shownReviews = new Set((c.items || []).filter(i => i.kind === 'review').map(i => i.id));
 
-  let html = cvHeaderHtml(c.header);
+  // A thread asked for from the gutter starts open, even if resolved or outdated.
+  let revealId = '';
+  if (cvPendingReveal) {
+    const r = cvPendingReveal;
+    const t = (c.threads || []).find(t => t.path === r.path && (t.side || 'RIGHT') === (r.side || 'RIGHT') && (t.line === r.line || t.originalLine === r.line));
+    if (t) { revealId = t.id; cvOpened.add(t.id); cvClosed.delete(t.id); }
+  }
+
+  let html = cvHeaderHtml(c.header) + cvChecksHtml(c.checks || []);
   if (cvError) html += '<div class="cv-error">Refresh failed: ' + esc(cvError) + '. Showing what was loaded ' + esc(cvRel(new Date(cvData.fetchedAt || Date.now()).toISOString())) + '.</div>';
   if (cvData.needsToken) {
     html += '<div class="cv-notice">Connect a GitHub token to see the timeline, reviews and threads. ' +
@@ -169,6 +180,48 @@ function cvDraw(article) {
     else el.textContent = b.text || '';
   }
   cvWire(article);
+  if (cvPendingReveal) {
+    cvPendingReveal = null;
+    const el = revealId && article.querySelector('[data-cv-thread="' + CSS.escape(revealId) + '"]');
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      el.classList.add('cv-flash');
+      setTimeout(() => el.classList.remove('cv-flash'), 1400);
+    }
+  }
+}
+
+/* Check runs on the head commit: a summary line that opens into one row per
+   check, with its result, duration and a link to its logs on GitHub. Opens by
+   itself when something failed. */
+function cvChecksHtml(checks) {
+  if (!checks.length) return '';
+  const failed = checks.filter(c => ['failure', 'timed_out', 'cancelled', 'action_required'].includes(c.conclusion)).length;
+  const running = checks.filter(c => c.status !== 'completed').length;
+  const passed = checks.filter(c => c.conclusion === 'success').length;
+  const other = checks.length - failed - running - passed;
+  const parts = [];
+  if (failed) parts.push('<span class="cv-bad-t">' + failed + ' failed</span>');
+  if (running) parts.push('<span class="cv-wait-t">' + running + ' running</span>');
+  if (passed) parts.push('<span class="cv-ok-t">' + passed + ' passed</span>');
+  if (other) parts.push(other + ' skipped or neutral');
+  const dur = c => {
+    const a = Date.parse(c.startedAt), b = Date.parse(c.completedAt);
+    if (!a || !b || b < a) return '';
+    const s = Math.round((b - a) / 1000);
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  };
+  const icon = c => c.status !== 'completed' ? ['cv-wait-t', '●']
+    : c.conclusion === 'success' ? ['cv-ok-t', '✓']
+      : ['failure', 'timed_out', 'cancelled', 'action_required'].includes(c.conclusion) ? ['cv-bad-t', '✕'] : ['cv-none', '–'];
+  return '<details class="cv-checks"' + (failed ? ' open' : '') + '><summary>Checks: ' + parts.join(', ') + '</summary><ul class="cv-check-list">' +
+    checks.map(c => {
+      const [cls, ch] = icon(c);
+      return '<li><span class="' + cls + '">' + ch + '</span><span class="cv-check-name">' + esc(c.name) + '</span>' +
+        '<span class="cv-check-state">' + esc(c.status === 'completed' ? (c.conclusion || 'done').replace('_', ' ') : c.status.replace('_', ' ')) + '</span>' +
+        '<span class="cv-check-dur">' + esc(dur(c)) + '</span>' +
+        (/^https:\/\//.test(c.url || '') ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer">Details</a>' : '') + '</li>';
+    }).join('') + '</ul></details>';
 }
 
 function cvHeaderHtml(h) {
@@ -264,7 +317,10 @@ function cvThreadHtml(t) {
     '<summary><span class="cv-path" data-cv-open="' + esc(t.id) + '" title="Open in the diff">' + esc(loc) + '</span>' +
     (t.outdated ? '<span class="cv-badge cv-badge-outdated">Outdated</span>' : '') +
     (t.resolved ? '<span class="cv-badge cv-badge-resolved">Resolved</span>' : '') +
-    '<span class="cv-thread-count">' + t.comments.length + ' comment' + (t.comments.length === 1 ? '' : 's') + '</span></summary>' +
+    '<span class="cv-thread-count">' + t.comments.length + ' comment' + (t.comments.length === 1 ? '' : 's') + '</span>' +
+    (!t.resolved && t.canResolve ? '<button class="opt" type="button" data-cv-resolve="' + esc(t.id) + '" title="Resolve this conversation on GitHub">Resolve</button>' : '') +
+    (t.resolved && t.canUnresolve ? '<button class="opt" type="button" data-cv-unresolve="' + esc(t.id) + '" title="Reopen this conversation on GitHub">Unresolve</button>' : '') +
+    '</summary>' +
     cvHunkHtml(t.diffHunk) +
     t.comments.map(cm => '<div class="cv-thread-comment">' + cvCommentHead(cm.author, cm.avatarUrl, '', cm.createdAt, cm.url) + cvBody(cm.bodyHtml, cm.body) + '</div>').join('') +
     (t.comments[0]?.databaseId
@@ -312,6 +368,15 @@ function cvWire(article) {
     if (!cvArticle()) return; // the article is shared with Markdown tabs
     if (e.target.closest('[data-cv-refresh]')) { cvRefresh(true); return; }
     if (e.target.closest('[data-cv-token]')) { nudgeGitHubToken(); return; }
+    const res = e.target.closest('[data-cv-resolve], [data-cv-unresolve]');
+    if (res) {
+      e.preventDefault(); // inside <summary>: do not toggle the thread
+      const resolved = 'cvResolve' in res.dataset;
+      const id = resolved ? res.dataset.cvResolve : res.dataset.cvUnresolve;
+      cvPost('/api/pr/threads/resolve', { threadId: id, resolved }, res)
+        .then(ok => { if (ok) showToast('✓', resolved ? 'Conversation resolved' : 'Conversation reopened'); });
+      return;
+    }
     const open = e.target.closest('[data-cv-open]');
     if (open) { e.preventDefault(); cvOpenThread(cvFindThread(open.dataset.cvOpen)); return; }
     const reply = e.target.closest('[data-cv-reply]');

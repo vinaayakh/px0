@@ -50,10 +50,15 @@ Without a token GraphQL is unavailable. The handler then returns `needsToken` an
 
 ## 6. Tests
 
+Beyond what follows, [`m5_test.go`](../../m5_test.go) covers check-run parsing and ordering and the resolve and unresolve mutations (and the no-token refusal).
+
+
 [`conversation_test.go`](../../conversation_test.go) serves fixture GraphQL pages through a fake transport: two timeline pages and a thread page (paging, commit grouping, the dropped reply-only and pending reviews, submitted time, force push, ghost authors, label colours, the aliased merge commit, unknown types skipped, thread fields and review links), the page limit and `truncated`, GraphQL errors, GFM rendering, the no-token fallback, and the cache with `refresh=1`. The sanitizer is the Markdown preview's, covered by the hostile-input cases in [markdown.md §4](markdown.md#4-sanitization); there is no browser test in the repository.
 
-## 7. Not Yet Done
+## 7. Checks, Resolving Threads, and the Drafts Panel
 
-- The checks panel (per-check status, duration and links, CNV-6).
-- Resolving and unresolving threads (CNV-8).
-- The bottom comments panel in `pr.js` still lists posted comments as well as drafts; the PRD plans to reduce it to drafts only.
+**Checks.** The timeline query also asks for the head commit (`headRefOid`); `fetchCheckRuns` then lists that commit's check runs through REST (`/commits/{sha}/check-runs`, up to 100), sorted failures first, then running, then the rest. A failure here only leaves the panel empty. The tab shows a summary line ("2 failed, 1 running, 9 passed") that opens into one row per check with its result, duration and a link to its logs; it opens by itself when something failed. Legacy commit statuses (the pre-Checks API) are not listed; they still count in the readiness row's rollup.
+
+**Resolving.** The thread query asks for `viewerCanResolve` and `viewerCanUnresolve`, so a thread shows **Resolve** or **Unresolve** only when GitHub would allow it. `POST /api/pr/threads/resolve {threadId, resolved}` runs the `resolveReviewThread` or `unresolveReviewThread` mutation right away, as the button on GitHub does, and drops the cached conversation so the next draw shows the new state.
+
+**Drafts only below.** The bottom panel in `pr.js` now lists only what the next review sends: human drafts and accepted AI suggestions, grouped by line, with a jump to the line and delete. Comments already on the PR, their replies and the top-level comment box live in this tab. A gutter badge on a line with a posted thread opens this tab at that thread (`conversation:reveal`), expanding it even when resolved or outdated; a badge on a line with drafts opens the drafts panel.

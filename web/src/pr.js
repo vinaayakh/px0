@@ -114,7 +114,7 @@ function renderBar() {
   if (mb) mb.hidden = !meta.merged;
   $('#pr-title').textContent = meta.title;
   $('#pr-title').title = meta.title;
-  $('#pr-refs').textContent = meta.base + ' ← ' + meta.head;
+  $('#pr-refs').textContent = meta.base + ' â† ' + meta.head;
   $('#pr-draft-count').textContent = comments.length
     ? (comments.length + (comments.length === 1 ? ' draft comment' : ' draft comments'))
     : '';
@@ -141,8 +141,6 @@ function renderBar() {
       ? 'No GitHub token configured -- click to connect and submit'
       : 'Submit review with drafts, without approval or change requests';
   }
-  const composeEl = $('#pr-issue-compose');
-  if (composeEl) composeEl.hidden = false;
 }
 
 export function nudgeGitHubToken() {
@@ -155,33 +153,7 @@ function wireBarButtons() {
   $('#pr-submit-comment')?.addEventListener('click', () => submitReview('COMMENT'));
   $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
   $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
-  $('#pr-issue-compose-send')?.addEventListener('click', sendNewIssueComment);
   $('#pr-readonly-note')?.addEventListener('click', nudgeGitHubToken);
-}
-
-async function sendNewIssueComment() {
-  if (meta?.readOnly) {
-    nudgeGitHubToken();
-    return;
-  }
-  const ta = $('#pr-issue-compose-body');
-  if (!ta) return;
-  const body = ta.value.trim();
-  if (!body) return;
-  const btn = $('#pr-issue-compose-send');
-  if (btn) btn.disabled = true;
-  try {
-    const c = await apiPostJson('/api/pr/comments/issue', { body });
-    issueComments.push(c);
-    ta.value = '';
-    expandedKeys.add('issue:' + c.id);
-    renderCommentsPanel();
-    showToast('✓', 'Comment posted');
-  } catch (e) {
-    showToast('!', e.message || 'Could not post comment');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
 }
 
 // Only the label swaps text; the icon markup (SVG + .footer-btn-label span,
@@ -191,8 +163,21 @@ function setBatchBtnLabel(btn, text) {
   if (label) label.textContent = text; else if (btn) btn.textContent = text;
 }
 
+// The instruction a draft becomes for Batch Apply. An AI suggestion that
+// carries replacement code hands it over, so the harness applies the change
+// the reviewer accepted rather than re-deriving it from the comment.
+function batchInstruction(c) {
+  let text = c.body.trim();
+  if (c.ai?.suggestion) {
+    const where = c.startLine && c.startLine < c.line ? 'lines ' + c.startLine + '-' + c.line : 'line ' + c.line;
+    text += '\n\nSuggested replacement for ' + where + ':\n```\n' + c.ai.suggestion + '\n```';
+  }
+  return text;
+}
+
 async function batchApplyComments() {
-  const applicable = comments.filter(c => c.path && c.line && c.body?.trim());
+  // Summary notes are about files outside the PR: nothing there to edit.
+  const applicable = comments.filter(c => c.path && c.line && c.body?.trim() && c.subjectType !== 'summary');
   if (!applicable.length) {
     showToast('!', 'No draft comments with line locations to apply');
     return;
@@ -204,9 +189,9 @@ async function batchApplyComments() {
   }
   const edits = applicable.map(c => ({
     path: c.path,
-    l1: c.line,
+    l1: c.startLine && c.startLine < c.line ? c.startLine : c.line,
     l2: c.line,
-    instruction: c.body.trim(),
+    instruction: batchInstruction(c),
   }));
   try {
     const job = await apiPostJson('/api/agent/batch', { edits });
@@ -241,7 +226,7 @@ async function pollPRBatch(id, count) {
         if (j.changed?.length) await reloadWorkspace(null);
         return;
       }
-      showToast('✓', `Batch applied ${count} comments!`);
+      showToast('âœ“', `Batch applied ${count} comments!`);
       await reloadWorkspace(null);
       await refreshComments();
     } catch (e) {
@@ -267,7 +252,10 @@ async function submitReview(event) {
     return;
   }
   try {
-    await apiPostJson('/api/pr/submit', { event, body });
+    const res = await apiPostJson('/api/pr/submit', { event, body });
+    if (res?.headMoved) {
+      showToast('!', 'The PR has new commits on GitHub since this checkout. Your review was posted on the commit you reviewed; Pull to see the new ones.', 8000);
+    }
     comments = [];
     emit('pr:submitted');
     for (const b of document.querySelectorAll('.pr-suggested')) b.classList.remove('pr-suggested');
@@ -276,7 +264,7 @@ async function submitReview(event) {
     renderBar();
     renderCommentsPanel();
     renderMarkersForActiveDoc();
-    showToast('✓', event === 'APPROVE' ? 'Review approved'
+    showToast('âœ“', event === 'APPROVE' ? 'Review approved'
       : event === 'REQUEST_CHANGES' ? 'Changes requested'
       : 'Review comment submitted');
   } catch (e) {
@@ -409,7 +397,7 @@ export function openCommentComposer(info) {
   box.innerHTML =
     '<div class="agent-head"><span class="sel-chip">Review Comment</span>' +
     '<span class="agent-ref" role="button" tabindex="0" title="Jump to this line">' + esc(ref) + '</span>' +
-    '<span class="grow"></span><button class="agent-close" title="Close (Esc)">✕</button></div>' +
+    '<span class="grow"></span><button class="agent-close" title="Close (Esc)">âœ•</button></div>' +
     '<div class="agent-compose">' +
     '<textarea class="agent-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Leave a comment on this line... (' + esc(modEnter) + ' to add)"></textarea>' +
     '<div class="agent-err" hidden></div>' +
@@ -446,7 +434,6 @@ export function openCommentComposer(info) {
     try {
       const c = await apiPostJson('/api/pr/comments', { path: info.path, line, side, body });
       comments.push(c);
-      expandedKeys.add('thread:' + threadKey(info.path, side, line));
       close();
       renderBar();
       renderCommentsPanel();
@@ -540,30 +527,21 @@ function renderMarkersForActiveDoc() {
     badge.innerHTML = COMMENT_ICON;
     badge.addEventListener('click', e => {
       e.stopPropagation();
-      revealThreadInPanel(threadKey(d.path, side, line));
+      if (drafts) { revealThreadInPanel(threadKey(d.path, side, line)); return; }
+      // A posted thread: its replies are in the Conversation tab.
+      openFile('pr://conversation').then(() => emit('conversation:reveal', { path: d.path, side, line }));
     });
     el.querySelector('.diff-code')?.before(badge);
   }
   extraMarkers?.(d.path, rows);
 }
 
-/* ---------- bottom panel: existing comments + drafts, always open ---------- */
+/* ---------- bottom panel: your drafts ----------
+   What the next review will send: your own drafts and the AI suggestions you
+   accepted, grouped by line. Comments already posted on the PR, with their
+   replies, live in the Conversation tab (conversation.js). */
 
 function threadKey(path, side, line) { return path + '|' + (side || 'RIGHT') + ':' + line; }
-
-// Which accordion items ("issue:<id>" / "thread:<threadKey>") are expanded.
-// Persists across re-renders within the session so replying, adding a draft,
-// or a background refresh never silently collapses something you opened.
-const expandedKeys = new Set();
-
-function toggleAccordion(item) {
-  if (!item) return;
-  const key = item.dataset.acc;
-  const open = !item.classList.contains('open');
-  item.classList.toggle('open', open);
-  if (!key) return;
-  if (open) expandedKeys.add(key); else expandedKeys.delete(key);
-}
 
 function wireCommentsPanel() {
   const panel = $('#pr-comments-panel');
@@ -612,69 +590,19 @@ function wireCommentsPanel() {
   }
 
   $('#pr-comments-list')?.addEventListener('click', e => {
-    const replyBtn = e.target.closest('.pr-issue-comment-reply-btn');
-    if (replyBtn) {
-      const ta = $('#pr-issue-compose-body');
-      if (ta) {
-        const prefix = replyBtn.dataset.author ? '@' + replyBtn.dataset.author + ' ' : '';
-        if (!ta.value.startsWith(prefix)) ta.value = prefix + ta.value;
-        ta.focus();
-        ta.setSelectionRange(ta.value.length, ta.value.length);
-      }
-      return;
-    }
     const loc = e.target.closest('.pr-comment-loc');
     if (loc) {
-      openFile(loc.dataset.path, { line: +loc.dataset.line });
+      revealPRLine(loc.dataset.path, loc.dataset.side || 'RIGHT', +loc.dataset.line);
+      return;
+    }
+    const conv = e.target.closest('[data-open-conversation]');
+    if (conv) {
+      openFile('pr://conversation');
       return;
     }
     const delBtn = e.target.closest('.pr-comment-delete-btn');
-    if (delBtn) {
-      deleteDraft(+delBtn.dataset.draftId);
-      return;
-    }
-    const sendBtn = e.target.closest('.reply-send');
-    if (sendBtn) {
-      const row = sendBtn.closest('.pr-comment-reply-row');
-      sendThreadReply(row);
-      return;
-    }
-    const head = e.target.closest('.acc-head');
-    if (head) toggleAccordion(head.closest('.acc-item'));
+    if (delBtn) deleteDraft(+delBtn.dataset.draftId);
   });
-
-  $('#pr-comments-list')?.addEventListener('keydown', e => {
-    if (!e.target.closest('.reply-input')) return;
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      sendThreadReply(e.target.closest('.pr-comment-reply-row'));
-    }
-  });
-}
-
-async function sendThreadReply(row) {
-  if (!row) return;
-  if (meta?.readOnly) {
-    nudgeGitHubToken();
-    return;
-  }
-  const ta = row.querySelector('.reply-input');
-  const body = ta?.value.trim();
-  if (!body) return;
-  const commentId = +row.dataset.replyTo;
-  const btn = row.querySelector('.reply-send');
-  if (btn) btn.disabled = true;
-  try {
-    const c = await apiPostJson('/api/pr/comments/review-reply', { commentId, body });
-    reviewComments.push(c);
-    renderCommentsPanel();
-    renderMarkersForActiveDoc();
-    showToast('✓', 'Reply posted');
-  } catch (e) {
-    showToast('!', e.message || 'Could not reply');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
 }
 
 async function deleteDraft(id) {
@@ -684,95 +612,34 @@ async function deleteDraft(id) {
     renderBar();
     renderCommentsPanel();
     renderMarkersForActiveDoc();
+    emit('pr:drafts-changed');
   } catch (e) {
     showToast('!', e.message || 'Could not delete draft');
   }
 }
 
-// Expands the panel if collapsed, opens the thread's accordion item, scrolls
-// to it, and briefly flashes it -- the gutter badge's click target now lands
-// here instead of opening a separate floating box.
+// Expands the panel if collapsed, scrolls to the drafts on that line, and
+// briefly flashes them -- where a draft's gutter badge lands.
 function revealThreadInPanel(key) {
   const panel = $('#pr-comments-panel');
   panel?.classList.remove('collapsed');
   layout(); render();
   const el = $('#pr-comments-list')?.querySelector('[data-thread-key="' + CSS.escape(key) + '"]');
   if (!el) return;
-  if (!el.classList.contains('open')) toggleAccordion(el);
   el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1200);
 }
 
-// Every comment/thread is an accordion item: a clickable .acc-head (author,
-// time, a one-line ellipsized preview of the body) and an .acc-body that's
-// only in the flow when the item carries the 'open' class -- so a scan of
-// the panel is just headers until you click one open to read and reply.
-function issueCommentCardHtml(c) {
-  const key = 'issue:' + c.id;
-  const open = expandedKeys.has(key);
-  return '<div class="pr-comment-card acc-item' + (open ? ' open' : '') + '" data-acc="' + esc(key) + '">' +
-    '<div class="acc-head">' +
-      '<span class="acc-chevron">&#8250;</span>' +
-      '<span class="pr-issue-comment-author">' + esc(c.author || 'unknown') + '</span>' +
-      '<span class="pr-issue-comment-time">' + esc(fmtTime(c.createdAt)) + '</span>' +
-      '<span class="acc-preview">' + esc(c.body) + '</span>' +
-    '</div>' +
-    '<div class="acc-body">' +
-      '<div class="pr-issue-comment-body">' + esc(c.body) + '</div>' +
-      '<button class="pr-issue-comment-reply-btn" data-author="' + esc(c.author || '') + '">Reply</button>' +
-    '</div>' +
-  '</div>';
-}
-
-function reviewCommentCardHtml(c) {
-  return '<div class="pr-comment-card' + (c.inReplyTo ? ' reply' : '') + '">' +
-    '<div class="pr-issue-comment-head">' +
-      '<span class="pr-issue-comment-author">' + esc(c.author || 'unknown') + '</span>' +
-      '<span class="pr-issue-comment-time">' + esc(fmtTime(c.createdAt)) + '</span>' +
-    '</div>' +
-    '<div class="pr-issue-comment-body">' + esc(c.body) + '</div>' +
-  '</div>';
-}
-
 function draftCardHtml(c) {
-  const who = c.origin === 'ai' ? 'AI suggestion you accepted (draft, not yet submitted)' : 'You (draft, not yet submitted)';
+  const who = c.origin === 'ai' ? 'AI suggestion you ' + (c.status === 'edited' ? 'edited' : 'accepted') : 'You';
   return '<div class="pr-comment-card draft' + (c.origin === 'ai' ? ' ai' : '') + '">' +
     '<div class="pr-issue-comment-head"><span class="pr-issue-comment-author">' + who + '</span></div>' +
     '<div class="pr-issue-comment-body">' + esc(c.body) + '</div>' +
+    (c.ai?.suggestion ? '<pre class="pr-draft-sugg">' + esc(c.ai.suggestion) + '</pre>' : '') +
     '<div class="pr-comment-card-actions">' +
       '<button class="pr-comment-delete-btn" data-draft-id="' + c.id + '">Delete draft</button>' +
     '</div>' +
-  '</div>';
-}
-
-function threadHtml(path, t, key) {
-  const sortedExisting = [...t.existing].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-  const root = sortedExisting.find(c => !c.inReplyTo) || sortedExisting[0];
-  const loc = path + ':' + t.line + (t.side === 'LEFT' ? ' (base)' : '');
-  const itemsHtml = sortedExisting.map(reviewCommentCardHtml).join('');
-  const draftsHtml = t.drafts.map(draftCardHtml).join('');
-  const canReply = !!root;
-  const replyRow = canReply
-    ? '<div class="pr-comment-reply-row" data-reply-to="' + root.id + '">' +
-      '<textarea class="pr-review-body reply-input" rows="1" spellcheck="false" autocomplete="off" placeholder="Reply..."></textarea>' +
-      '<button class="footer-btn reply-send">Reply</button>' +
-      '</div>'
-    : '';
-  const accKey = 'thread:' + key;
-  const open = expandedKeys.has(accKey);
-  const total = sortedExisting.length + t.drafts.length;
-  const countBadge = total > 1 ? '<span class="acc-count">' + total + '</span>' : '';
-  const preview = root ? root.body : (t.drafts[0]?.body || '');
-  return '<div class="pr-comment-thread acc-item' + (open ? ' open' : '') + '" data-thread-key="' + esc(key) + '" data-acc="' + esc(accKey) + '">' +
-    '<div class="acc-head">' +
-      '<span class="acc-chevron">&#8250;</span>' +
-      '<span class="pr-comment-loc" data-path="' + esc(path) + '" data-line="' + t.line + '">' + esc(loc) + '</span>' +
-      '<span class="pr-issue-comment-author">' + esc(root ? (root.author || 'unknown') : 'you') + '</span>' +
-      countBadge +
-      '<span class="acc-preview">' + esc(preview) + '</span>' +
-    '</div>' +
-    '<div class="acc-body">' + itemsHtml + draftsHtml + replyRow + '</div>' +
   '</div>';
 }
 
@@ -780,54 +647,30 @@ function renderCommentsPanel() {
   const listEl = $('#pr-comments-list');
   const countEl = $('#pr-comments-count');
   if (!listEl) return;
-
-  // Group existing review comments and local drafts by path, then by
-  // side:line -- a reply carries the same path/line/side as its thread
-  // root, so grouping by that key alone already gathers a whole thread.
-  const byPath = new Map();
-  const threadFor = (path, side, line) => {
-    if (!byPath.has(path)) byPath.set(path, new Map());
-    const m = byPath.get(path);
-    const key = threadKey(path, side, line);
-    if (!m.has(key)) m.set(key, { existing: [], drafts: [], side, line });
-    return m.get(key);
-  };
-  for (const c of reviewComments) {
-    if (!c.path) continue;
-    threadFor(c.path, c.side || 'RIGHT', c.line).existing.push(c);
-  }
+  const groups = new Map();
   for (const c of comments) {
     if (!c.path) continue;
-    threadFor(c.path, c.side || 'RIGHT', c.line).drafts.push(c);
+    const key = threadKey(c.path, c.side, c.line);
+    if (!groups.has(key)) groups.set(key, { path: c.path, side: c.side || 'RIGHT', line: c.line, subject: c.subjectType, drafts: [] });
+    groups.get(key).drafts.push(c);
   }
-
-  const totalReview = reviewComments.length + comments.length;
-  let html = '<div class="pr-comments-section-title">Conversation' +
-    (issueComments.length ? ' (' + issueComments.length + ')' : '') + '</div>';
-  html += issueComments.length
-    ? [...issueComments].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '')).map(issueCommentCardHtml).join('')
-    : '<div class="pr-comments-empty">No top-level comments yet.</div>';
-
-  html += '<div class="pr-comments-section-title">Review comments' +
-    (totalReview ? ' (' + totalReview + ')' : '') + '</div>';
-  if (byPath.size === 0) {
-    html += '<div class="pr-comments-empty">No inline comments yet.</div>';
+  const entries = [...groups.entries()].sort((a, b) => a[1].path.localeCompare(b[1].path) || a[1].line - b[1].line);
+  let html = '';
+  if (!entries.length) {
+    html = '<div class="pr-comments-empty">No drafts yet. Comment on a diff line (' + esc(keyLabel('Alt+R')) + ') or accept an AI suggestion; ' +
+      'everything here goes out with your next review. Comments already on the PR are in the ' +
+      '<a href="#" data-open-conversation>Conversation</a> tab.</div>';
   } else {
-    const entries = [];
-    for (const [path, threads] of byPath) {
-      for (const [key, t] of threads) entries.push([path, key, t]);
-    }
-    entries.sort((a, b) => a[0].localeCompare(b[0]) || a[2].line - b[2].line);
-    html += entries.map(([path, key, t]) => threadHtml(path, t, key)).join('');
+    html = entries.map(([key, g]) => {
+      const loc = g.path + (g.subject === 'file' ? ' (whole file)' : g.subject === 'summary' ? ' (review body)' : ':' + g.line + (g.side === 'LEFT' ? ' (base)' : ''));
+      return '<div class="pr-comment-thread" data-thread-key="' + esc(key) + '">' +
+        '<div class="pr-draft-head"><span class="pr-comment-loc" data-path="' + esc(g.path) + '" data-side="' + esc(g.side) + '" data-line="' + g.line + '">' + esc(loc) + '</span></div>' +
+        g.drafts.map(draftCardHtml).join('') + '</div>';
+    }).join('');
   }
-
   listEl.innerHTML = html;
-  if (countEl) {
-    const n = issueComments.length + totalReview;
-    countEl.textContent = n ? String(n) : '';
-  }
+  if (countEl) countEl.textContent = comments.length ? String(comments.length) : '';
 }
-
 /* ---------- launching another PR from a running session ---------- */
 
 // Called from palette.js's "Git: Open Pull Request..." command. The PR opens

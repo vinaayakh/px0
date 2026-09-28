@@ -89,7 +89,9 @@ The list beside the graph sorts every branch against the default branch (`origin
 
 Filter the list by category with the chips above it.
 
-**Focus** a branch by clicking it in the list, clicking a ref pill, or clicking any lane in the graph — even the lane of a branch that was merged and deleted long ago. Its own commits, the commit it forked from and the merge that brought it in stay bright; everything else fades. The focus is kept in the page URL, so a reload or a shared link keeps it. Press **Esc** or click empty space to clear it. The graph only reads: nothing is checked out, rebased or deleted from it.
+**Focus** a branch by clicking it in the list, clicking a ref pill, or clicking any lane in the graph — even the lane of a branch that was merged and deleted long ago. Its own commits, the commit it forked from and the merge that brought it in stay bright; everything else fades. The focus is kept in the page URL, so a reload or a shared link keeps it. Press **Esc** or click empty space to clear it.
+
+Click a commit row to open it on the right: its full message, author, parents, refs and changed files; click a file to see its diff. The search box finds commits by message, author or hash; **Enter** and **Shift+Enter** step through the matches. Branches worth cleaning up (merged, upstream gone, stale, squash merged) have a **Copy delete** button that copies the git command to delete them — px0 never runs it. The graph refreshes by itself when a commit, checkout, fetch or pull moves your branches, keeping your place and focus. The graph only reads: nothing is checked out, rebased or deleted from it.
 
 ---
 
@@ -111,6 +113,9 @@ Filter the list by category with the chips above it.
 | **Graph** / **Git: Show Graph** | Git Panel header / Command Palette | Open the commit graph with branch health |
 | Click a branch, ref pill or lane | Graph tab | Focus that branch's commits, fork point and merge |
 | `Esc` / click empty space | Graph tab | Clear the focus |
+| Click a commit row | Graph tab | Open the commit: message, parents, changed files and diffs |
+| `Enter` / `Shift+Enter` | Graph search box | Next / previous matching commit |
+| **Copy delete** | Graph branch list | Copy the command that deletes a merged, gone, stale or squash-merged branch |
 
 ---
 

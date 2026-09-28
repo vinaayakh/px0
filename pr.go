@@ -45,7 +45,10 @@ type prSession struct {
 	nextID   int64
 
 	review *reviewState // AI review runs (review.go)
-	conv   *convCache   // last Conversation tab fetch (conversation.go)
+	// remoteHead is the PR head GitHub reported at the last submit, when it
+	// differs from the checkout's: the PR moved on without a Pull here.
+	remoteHead string
+	conv       *convCache // last Conversation tab fetch (conversation.go)
 }
 
 // ErrPRMergedCancelled is returned when opening an already-merged PR is cancelled.
@@ -261,6 +264,9 @@ func (p *prSession) Pull() (info string, err error) {
 	p.meta.HeadSHA = strings.TrimSpace(string(shaOut))
 	p.diffBase = diffBase
 	p.diffBaseWarning = diffBaseWarning
+	if p.remoteHead == p.meta.HeadSHA {
+		p.remoteHead = "" // caught up with what GitHub reported
+	}
 	p.mu.Unlock()
 
 	return "pulled the latest changes", nil
@@ -549,6 +555,22 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "no push access on this repository; only Comment reviews are allowed")
 		return
 	}
+	// Has the PR moved on GitHub since this checkout? The review still goes
+	// against the commit reviewed here (GitHub accepts that, and shows the
+	// comments as on an older commit), but pending AI suggestions become
+	// stale until the reviewer pulls and re-checks them.
+	headMoved := false
+	hctx, hcancel := context.WithTimeout(r.Context(), 10*time.Second)
+	if m, err := p.provider.FetchPR(hctx, p.target, p.token); err == nil && m.HeadSHA != "" {
+		p.mu.Lock()
+		p.remoteHead = ""
+		if m.HeadSHA != p.meta.HeadSHA {
+			p.remoteHead, headMoved = m.HeadSHA, true
+		}
+		p.mu.Unlock()
+	}
+	hcancel()
+
 	// Only human drafts and AI suggestions the reviewer accepted or edited are
 	// sent. Pending suggestions stay for the next review; dismissed ones stay in
 	// memory so a re-run can recognise them.
@@ -576,7 +598,7 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 	p.comments = remaining
 	s.persistDrafts(p)
 	p.mu.Unlock()
-	writeJSON(w, map[string]any{"ok": true})
+	writeJSON(w, map[string]any{"ok": true, "headMoved": headMoved})
 }
 
 // handleLaunchPR (opening another PR in a child px0) is in inbox.go, next to

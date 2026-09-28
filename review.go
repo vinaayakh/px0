@@ -50,6 +50,14 @@ type aiSuggestion struct {
 	ReportedLine int     `json:"reportedLine,omitempty"`
 	ReportedSide string  `json:"reportedSide,omitempty"`
 	OriginalBody string  `json:"originalBody,omitempty"` // as the model wrote it, kept once the reviewer edits
+	ModelBody    string  `json:"modelBody,omitempty"`    // the model's text, before any "Line N:" prefix
+	ReportedFrom int     `json:"reportedStartLine,omitempty"`
+	// HeadSHA is the PR head the suggestion was anchored against. When the
+	// head moves (a Pull, or new commits seen at submit time) a pending
+	// suggestion is stale: its line may no longer be where it says, so it
+	// cannot be accepted until it is re-checked against the new diff.
+	HeadSHA string `json:"headSha,omitempty"`
+	Stale   bool   `json:"stale,omitempty"` // computed when listed, never stored
 }
 
 // reviewRun is one Run AI Review, from dispatch to parsed suggestions.
@@ -413,11 +421,6 @@ func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() i
 		counts[a.Status]++
 		c := prComment{
 			ID:          nextID(),
-			Path:        a.Path,
-			Line:        a.Line,
-			Side:        a.Side,
-			StartLine:   a.StartLine,
-			Body:        body,
 			Origin:      prOriginAI,
 			Status:      prStatusPending,
 			RunID:       runID,
@@ -428,21 +431,14 @@ func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() i
 				Confidence:   normConfidence(s.Confidence),
 				Suggestion:   code,
 				Quote:        s.Quote,
-				Anchor:       a.Status,
+				ModelBody:    body,
 				ReportedPath: s.Path,
 				ReportedLine: line,
+				ReportedFrom: start,
 				ReportedSide: strings.ToUpper(s.Side),
 			},
 		}
-		switch a.Status {
-		case anchorFile:
-			c.SubjectType = "file"
-			if line > 0 {
-				c.Body = fmt.Sprintf("**Line %d:** %s", line, body)
-			}
-		case anchorSummary:
-			c.SubjectType = "summary"
-		}
+		c.applyAnchor(a)
 		res = append(res, c)
 	}
 	sort.SliceStable(res, func(i, j int) bool {
@@ -456,6 +452,28 @@ func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() i
 		return res[i].Line < res[j].Line
 	})
 	return res, counts
+}
+
+// applyAnchor places an AI suggestion where the anchoring put it. A
+// file-level one keeps the line the model meant in its body; a suggestion
+// the reviewer edited keeps the reviewer's text.
+func (c *prComment) applyAnchor(a anchorResult) {
+	c.Path, c.Line, c.Side, c.StartLine = a.Path, a.Line, a.Side, a.StartLine
+	c.AI.Anchor = a.Status
+	c.SubjectType = ""
+	body := c.AI.ModelBody
+	switch a.Status {
+	case anchorFile:
+		c.SubjectType = "file"
+		if c.AI.ReportedLine > 0 {
+			body = fmt.Sprintf("**Line %d:** %s", c.AI.ReportedLine, body)
+		}
+	case anchorSummary:
+		c.SubjectType = "summary"
+	}
+	if c.Status != prStatusEdited {
+		c.Body = body
+	}
 }
 
 // submitBody is the comment text GitHub receives: the body, plus the
@@ -608,6 +626,25 @@ func (s *Server) finishReview(run *reviewRun, pd *prDiff, j *agentJob) {
 	}
 	nextID := func() int64 { p.nextID++; return p.nextID }
 	sugg, counts := buildSuggestions(pd, out, run.ID, nextID)
+	// A suggestion the reviewer already accepted or dismissed in this session
+	// is not shown again when a re-run produces it once more.
+	decided := map[string]bool{}
+	for _, c := range p.comments {
+		if c.Origin == prOriginAI && c.Status != prStatusPending {
+			decided[c.Fingerprint] = true
+		}
+	}
+	fresh := sugg[:0]
+	for _, c := range sugg {
+		if decided[c.Fingerprint] {
+			counts["repeat"]++
+			counts[c.AI.Anchor]--
+			continue
+		}
+		c.AI.HeadSHA = run.HeadSHA
+		fresh = append(fresh, c)
+	}
+	sugg = fresh
 	run.Summary = strings.TrimSpace(out.Summary)
 	run.Counts = counts
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(out.Verdict), " ", "_")) {
@@ -687,12 +724,75 @@ func (s *Server) handleReviewSuggestions(w http.ResponseWriter, r *http.Request)
 		run = p.review.cur
 	}
 	sugg := []prComment{}
+	stale := 0
 	for _, c := range p.comments {
 		if c.Origin == prOriginAI {
+			if c.AI != nil && p.isStale(c) {
+				ai := *c.AI
+				ai.Stale = true
+				c.AI = &ai
+				stale++
+			}
 			sugg = append(sugg, c)
 		}
 	}
-	writeJSON(w, map[string]any{"run": run, "suggestions": sugg})
+	writeJSON(w, map[string]any{"run": run, "suggestions": sugg, "stale": stale,
+		"head": p.meta.HeadSHA, "remoteHead": p.remoteHead})
+}
+
+// isStale reports whether a pending AI suggestion was anchored against a
+// head the PR has since moved from, locally (a Pull) or on GitHub (seen at
+// submit time). Callers hold p.mu.
+func (p *prSession) isStale(c prComment) bool {
+	if c.AI == nil || c.Status != prStatusPending || c.AI.HeadSHA == "" {
+		return false
+	}
+	return c.AI.HeadSHA != p.meta.HeadSHA || (p.remoteHead != "" && p.remoteHead != c.AI.HeadSHA)
+}
+
+// handleReviewRevalidate re-anchors every stale pending suggestion against
+// the current diff, with the line, side and quote the model reported, and
+// marks it current. POST.
+func (s *Server) handleReviewRevalidate(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) || !localPost(w, r) {
+		return
+	}
+	p := s.pr
+	p.mu.Lock()
+	base, root, head := p.diffBase, p.worktree, p.meta.HeadSHA
+	p.mu.Unlock()
+	if root == "" && s.ix != nil {
+		root = s.ix.Root()
+	}
+	if base == "" || base == "HEAD" {
+		fail(w, http.StatusConflict, "the PR's merge-base could not be resolved")
+		return
+	}
+	diffText, err := gitPRDiff(root, base)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	pd := parseUnifiedDiff(diffText)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.remoteHead != "" && p.remoteHead != head {
+		fail(w, http.StatusConflict, "the PR has new commits on GitHub; Pull them first, then re-check")
+		return
+	}
+	counts := map[string]int{}
+	for i := range p.comments {
+		c := &p.comments[i]
+		if !p.isStale(*c) {
+			continue
+		}
+		a := pd.Anchor(c.AI.ReportedPath, c.AI.ReportedLine, c.AI.ReportedFrom, c.AI.ReportedSide, c.AI.Quote)
+		c.applyAnchor(a)
+		c.AI.HeadSHA = head
+		counts[a.Status]++
+	}
+	writeJSON(w, map[string]any{"counts": counts})
 }
 
 // handleReviewTriage applies accept, edit, dismiss or restore to AI
@@ -736,9 +836,14 @@ func (s *Server) handleReviewTriage(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	changed := []prComment{}
+	staleRefused := 0
 	for i := range p.comments {
 		c := &p.comments[i]
 		if !want[c.ID] || c.Origin != prOriginAI {
+			continue
+		}
+		if (status == prStatusAccepted || status == prStatusEdited) && p.isStale(*c) {
+			staleRefused++ // its line may have moved: re-check before accepting
 			continue
 		}
 		if status == prStatusEdited {
@@ -753,12 +858,16 @@ func (s *Server) handleReviewTriage(w http.ResponseWriter, r *http.Request) {
 		}
 		changed = append(changed, *c)
 	}
+	if len(changed) == 0 && staleRefused > 0 {
+		fail(w, http.StatusConflict, "the PR head moved since this suggestion was made; re-check suggestions against the new head first")
+		return
+	}
 	if len(changed) == 0 {
 		fail(w, http.StatusNotFound, "no AI suggestion with those ids")
 		return
 	}
 	s.persistDrafts(p)
-	writeJSON(w, map[string]any{"suggestions": changed, "draftCount": countSubmittable(p.comments)})
+	writeJSON(w, map[string]any{"suggestions": changed, "draftCount": countSubmittable(p.comments), "staleRefused": staleRefused})
 }
 
 // handleReviewCancel stops the running review.

@@ -23,11 +23,33 @@ let ibLoading = false;
 const ibData = {};                 // section -> response
 const ibCollapsed = new Set();     // collapsed section ids
 const ibOpening = new Set();       // PR URLs being launched
+let ibFilter = '';                 // filter box text
+let ibSort = '';                   // '', 'updated', 'created' or 'repo'
+
+// The filter and sort are a per-viewer convenience: remembered in this
+// browser if it allows, fine to lose.
+function ibRemember(key, value) {
+  try { localStorage.setItem('px0.inbox.' + key, value); } catch {}
+}
+function ibRecall(key) {
+  try { return localStorage.getItem('px0.inbox.' + key) || ''; } catch { return ''; }
+}
 
 export function initInbox() {
   $('#btn-inbox')?.addEventListener('click', () => { if (!ibOpen) showInbox(); });
   for (const sel of ['#btn-files', '#btn-changed']) $(sel)?.addEventListener('click', hideInbox);
   $('#inbox-refresh')?.addEventListener('click', () => ibLoad(true));
+  ibSort = ibRecall('sort');
+  const filterEl = $('#inbox-filter'), sortEl = $('#inbox-sort');
+  if (sortEl) {
+    sortEl.value = ibSort;
+    sortEl.addEventListener('change', () => { ibSort = sortEl.value; ibRemember('sort', ibSort); ibRender(); });
+  }
+  filterEl?.addEventListener('input', () => { ibFilter = filterEl.value; ibRender(); });
+  filterEl?.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && filterEl.value) { e.stopPropagation(); filterEl.value = ''; ibFilter = ''; ibRender(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); $('#inbox-body .ib-row')?.focus(); }
+  });
   const body = $('#inbox-body');
   body?.addEventListener('click', e => {
     if (e.target.closest('[data-ib-token]')) { openSettings('ui', 'GitHub', 'github.token'); return; }
@@ -162,10 +184,21 @@ function ibRender() {
     return;
   }
   let html = '';
+  const words = ibFilter.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = pr => {
+    const hay = (pr.title + ' ' + pr.author + ' ' + pr.repo + '#' + pr.number).toLowerCase();
+    return words.every(w => hay.includes(w));
+  };
+  const sorters = {
+    updated: (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''),
+    created: (a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''),
+    repo: (a, b) => a.repo.localeCompare(b.repo) || a.number - b.number,
+  };
   for (const s of IB_SECTIONS) {
     const d = ibData[s.id];
     if (!d || d.hidden) continue;
-    const items = d.items || [];
+    let items = (d.items || []).filter(matches);
+    if (sorters[ibSort]) items = [...items].sort(sorters[ibSort]);
     const collapsed = ibCollapsed.has(s.id);
     const title = s.id === 'repo' && d.repo ? s.title + ' · ' + d.repo : s.title;
     html += '<div class="ib-section' + (collapsed ? ' collapsed' : '') + '">' +
@@ -173,10 +206,10 @@ function ibRender() {
       '<span class="ib-head-title">' + esc(title) + '</span><span class="ib-count">' + (d.error ? '!' : items.length) + '</span></div>';
     if (!collapsed) {
       if (d.error) html += '<div class="ib-error">' + esc(d.error) + '</div>';
-      else if (!items.length) html += '<div class="ib-empty">Nothing here.</div>';
+      else if (!items.length) html += '<div class="ib-empty">' + (words.length && d.items?.length ? 'No match.' : 'Nothing here.') + '</div>';
       else {
         html += items.map(pr => ibRowHtml(pr, d.current)).join('');
-        if (d.total > items.length) html += '<div class="ib-empty">Showing ' + items.length + ' of ' + d.total + '.</div>';
+        if (!words.length && d.total > items.length) html += '<div class="ib-empty">Showing ' + items.length + ' of ' + d.total + '.</div>';
       }
     }
     html += '</div>';

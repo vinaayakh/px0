@@ -52,7 +52,8 @@ The launched child opens without its own browser tab (`-no-open`) because the pa
 
 [`inbox_test.go`](../../inbox_test.go): search parsing (CI and review mapping, ghost authors, skipped nodes), paging stops at 2 pages, remote URL parsing (including look-alike hosts), no-token, hidden repo section, the cache and `refresh=1`, the repo section in a PR session, and the launch registry, which runs the test binary as a stand-in child: the URL is read through ANSI codes, another spelling of the same PR reuses the running child, an exited child is forgotten, a failed one reports its output and is retried, and the session's own PR is refused. [`github_live_test.go`](../../github_live_test.go) checks the inbox and Conversation queries against GitHub itself when run with `PX0_LIVE_GITHUB=1` (read-only).
 
-## 8. Not Yet Done
+## 8. Filter, Sort, and `px0 inbox`
 
-- Filter box and sort options (INB-4).
-- The palette command **Git: Pull Requests** and `px0 inbox` to start straight into the panel without a workspace (INB-6).
+The filter box above the sections narrows every section at once: each word must appear in the title, author or `repo#number`. Esc clears it, ↓ moves into the list. The sort menu keeps each section's own order (review requests oldest first, the others most recently updated first) or sorts all of them by last update, by creation, or by repository. The sort choice is remembered in the browser's local storage, a per-viewer convenience that may be lost without harm.
+
+The palette command **Git: Pull Requests** opens the panel from anywhere. `px0 inbox` starts px0 with no workspace: it serves an empty temporary directory (`px0-inbox-*`, removed on exit) and opens the page with `?view=inbox`, which boots straight into the panel. PRs opened from there are checked out as fresh clones, since there is no local repository to add a worktree to. If a file or folder called `inbox` exists in the current directory, `px0 inbox` opens it as a workspace instead, as before.

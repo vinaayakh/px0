@@ -36,6 +36,8 @@ From any px0 session, the **Pull Requests** button (third in the Explorer toggle
 
 Each row shows the repository and number, title, author, time since the last update, a draft flag, the CI result (✓ passing, ✕ failing, ● running) and the review state (approved, changes requested). Click a row or press **Enter** to open it: px0 checks the PR out in a new session and shows it in its own browser window. Opening the same PR again brings that window back rather than checking it out twice. The list refreshes when you open it, with its refresh button, and every 5 minutes while it is visible. Without a GitHub token it tells you how to add one.
 
+Type in the filter box to narrow every section by title, author or repository; the sort menu orders the lists by last update, creation or repository instead of each section's own order. **Git: Pull Requests** in the Command Palette opens the inbox from anywhere, and `px0 inbox` starts px0 straight into it without opening any workspace.
+
 ### Interactive Preparation Spinner
 Because fetching metadata and checking out remote references takes a few moments, px0 displays an animated CLI spinner:
 ```text
@@ -62,10 +64,12 @@ From inside a running px0 browser session, the Command Palette (`Cmd/Ctrl+K` →
 ### The Conversation Tab
 A PR session opens on its **Conversation** tab, pinned first in the tab bar, as on GitHub:
 - **Header**: title and number, state (open, draft, merged, closed), author, base and head branches, labels, assignees and requested reviewers. For an open PR, a readiness row shows the review decision, whether checks pass, and whether the branch has conflicts.
+- **Checks**: a summary of the check runs on the head commit that opens into each check's result, duration and a link to its logs; it opens by itself when something failed.
 - **Description**, rendered as GitHub Flavored Markdown through the same sanitizer as Markdown files: images load from GitHub, and scripts and unsafe HTML are stripped.
 - **Timeline** in GitHub's order: comments, reviews (with their state), commits (consecutive ones grouped), force-pushes, review requests, label changes, and merge, close and reopen events.
 - **Review threads** appear under the review that started them, with the last lines of the diff they are on. Resolved and outdated threads start collapsed. Click a thread's path to open the diff at that line; an outdated thread opens the file's current diff with a note that the line has moved.
-- **Reply** to a thread, **Quote reply** to a comment, or write a new comment at the bottom. These post to GitHub immediately, as on GitHub.
+- **Reply** to a thread, **Quote reply** to a comment, or write a new comment at the bottom. **Resolve** and **Unresolve** appear on threads when GitHub lets you use them. These act on GitHub immediately, as on GitHub.
+- Clicking the comment marker of a posted thread in the diff gutter opens this tab at that thread.
 - The tab refreshes when you come back to it after 30 seconds, after you submit a review, after a Pull, and on **Refresh**. Without a GitHub token it shows the header and description, with a button to connect one.
 
 The file tree and the diff are the "Files changed" view.
@@ -91,8 +95,8 @@ When hovering over code lines or diff lines:
 
 ### 4. Batch Applying Comments Locally (`⚡ Batch Apply`)
 Drafted review comments appear in the PR top bar and inline across files:
-- **⚡ Batch Apply**: Lets you apply all drafted review comments across the entire pull request in one go using your configured coding agent harness. The agent reads your comments as instructions and modifies the code directly in the PR worktree.
-- Comments remain drafts in memory until either batch-applied or formally submitted.
+- **⚡ Batch Apply**: Lets you apply all drafted review comments across the entire pull request in one go using your configured coding agent harness. The agent reads your comments as instructions and modifies the code directly in the PR worktree. An accepted AI suggestion that proposes code hands that code to the harness too.
+- Comments remain drafts until either batch-applied or formally submitted. The **Drafts** panel at the bottom lists exactly what your next review will send, by line; comments already on the PR are in the Conversation tab.
 
 ### 5. AI Review: Suggestions You Curate
 **AI Review** in the PR bar opens the AI Review pane in the right inspector. Pick a harness and model, optionally type a focus ("security only"), and press **Run AI Review**. The harness reviews the PR read-only in the checkout: it can open any file and read `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`, but its file-writing tools are turned off. Only harnesses px0 can run read-only are offered: Claude Code and Codex.
@@ -106,7 +110,9 @@ What comes back are *suggestions*, not comments. Nothing is posted until you act
 
 px0 checks every suggestion against the real diff before showing it, because models misreport line numbers. A suggestion whose line and quoted text agree stays put; one whose quoted text is found on a single nearby line is moved there and marked **re-anchored**; anything else becomes a **file-level** comment (posted in the review body under the file's name), and a comment on a file outside the PR becomes a **summary note**. None are dropped. If the harness changes a file anyway, the run is flagged and px0 leaves the change for you to inspect.
 
-The review instructions are a markdown skill: `review.skillPath` in Settings, else `~/.px0/skills/review.md`, else the built-in skill. px0 always appends its output format, so a custom skill cannot break parsing. Running again replaces the pending suggestions; accepted, edited and dismissed ones stay.
+The review instructions are a markdown skill: `review.skillPath` in Settings, else `~/.px0/skills/review.md`, else the built-in skill. px0 always appends its output format, so a custom skill cannot break parsing. Running again replaces the pending suggestions; accepted, edited and dismissed ones stay, and a suggestion you already accepted or dismissed is not shown again.
+
+If the PR moves after a review run (you Pull new commits, or GitHub reports new ones when you submit), the pending suggestions are marked **stale**: their lines may have moved, so they cannot be accepted until you press **Re-check**, which places them again against the current diff. Dismissing still works.
 
 ### 6. Submitting Formal Reviews
 The PR review bar above the editor tabs hosts the overall review summary and verdict actions:

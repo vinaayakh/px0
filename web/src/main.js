@@ -28,7 +28,7 @@ import { initGitPanel } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initReview } from './review.js';
 import { initConversation } from './conversation.js';
-import { initInbox } from './inbox.js';
+import { initInbox, showInbox } from './inbox.js';
 import { initGraph } from './graph.js';
 import { initLineComment } from './linecomment.js';
 import { initProblems } from './problems.js';
@@ -164,6 +164,15 @@ initProblems();
     } else if (hasGitChanges) await selectChangedFileTab();
     // A link with a graph focus (#graph=ref:feature) opens on the graph.
     if (/^#graph=/.test(location.hash) && S.meta.git) await openFile('git://graph');
+  }
+  // `px0 inbox` opens straight into the PR inbox.
+  if (params.get('view') === 'inbox') {
+    showInbox();
+    try {
+      const u = new URL(location.href);
+      u.searchParams.delete('view');
+      history.replaceState({}, '', u.pathname + (u.search || '') + u.hash);
+    } catch {}
   }
 
   if (document.fonts && document.fonts.ready) {

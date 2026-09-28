@@ -92,11 +92,20 @@ A range (`startLine` < `line`) moves with its end line and survives only when it
 | `GET /api/pr/review/suggestions` | | `{run, suggestions}`: the latest run and every AI suggestion, any status |
 | `POST /api/pr/review/triage` | `{ids, action, body}` | `{suggestions, draftCount}` |
 | `POST /api/pr/review/cancel` | | `{ok}` |
+| `POST /api/pr/review/revalidate` | | `{counts}`: stale suggestions re-anchored against the current diff; 409 while GitHub is ahead of the checkout |
 
 Every POST goes through `localPost`.
 
-## 9. Not Yet Done
+## 9. Re-runs, Moving Heads and Batch Apply
 
-- Hiding suggestions a re-run produces again after they were dismissed or accepted (AIR-8). The fingerprints are stored for this.
-- Marking pending suggestions stale when the PR head moves (AIR-9).
+**Dismiss memory.** Every suggestion carries a fingerprint: a hash of its path, the quoted line and its text. When a run finishes, a new suggestion whose fingerprint matches one the reviewer already accepted, edited or dismissed in this session is dropped and counted as `repeat` (the pane says "N already decided, hidden"). Dismissed suggestions stay in memory after a submit for this reason; they are never written to disk, so the memory lasts as long as the session.
+
+**Stale suggestions.** Each suggestion records the head it was anchored against (`ai.headSha`). It is stale while pending if the checkout's head has since moved (a Pull updates `meta.HeadSHA`) or GitHub has reported a newer head (`remoteHead`, learned at submit time, below). `/api/pr/review/suggestions` marks those with `ai.stale` and a `stale` count; accepting or editing a stale suggestion is refused with 409, while dismissing still works. `POST /api/pr/review/revalidate` diffs the checkout against the merge-base again and re-anchors every stale suggestion from what the model originally reported (path, line, range start, side, quote) with the same rules as a fresh run, through `applyAnchor`, which also rebuilds a file-level body's "Line N" prefix unless the reviewer edited the text. It refuses while GitHub is ahead of the checkout: the new commits have to be pulled first. The pane shows a banner with **Re-check**, and reloads its list after a Pull (`pr:refreshed`).
+
+**Submit time.** Before sending a review, `handlePRSubmit` asks GitHub for the PR's current head. If it differs from the checkout's, the review is still posted against the commit that was reviewed (GitHub accepts that and shows the comments as on an older commit), the response says `headMoved`, the UI says so, and pending suggestions become stale until a Pull and a re-check.
+
+**Batch Apply.** Accepted and edited suggestions are ordinary drafts, so **⚡ Batch Apply** sends them to the harness like any other. A suggestion with replacement code carries that code in its instruction ("Suggested replacement for lines 10-12: …"), and a range suggestion applies to its whole range. Summary notes (about files outside the PR) are left out: there is nothing in the checkout to edit.
+
+## 10. Not Yet Done
+
 - Real file-level review comments. GitHub's GraphQL review-thread API supports them; px0 currently folds them into the review body.

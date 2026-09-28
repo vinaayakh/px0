@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -34,7 +37,7 @@ const convTimelineTypes = `[ISSUE_COMMENT, PULL_REQUEST_REVIEW, PULL_REQUEST_COM
 const convTimelineQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title url body createdAt isDraft state merged mergeable reviewDecision baseRefName headRefName
+      number title url body createdAt isDraft state merged mergeable reviewDecision baseRefName headRefName headRefOid
       author { login avatarUrl }
       labels(first: 30) { nodes { name color } }
       assignees(first: 20) { nodes { login } }
@@ -68,7 +71,7 @@ const convThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!, 
       reviewThreads(first: 50, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved isOutdated path line originalLine startLine diffSide
+          id isResolved isOutdated path line originalLine startLine diffSide viewerCanResolve viewerCanUnresolve
           comments(first: 50) {
             nodes { id databaseId author { login avatarUrl } body createdAt url diffHunk pullRequestReview { id } }
           }
@@ -164,6 +167,7 @@ type gqlPR struct {
 	ReviewDecision string    `json:"reviewDecision"`
 	BaseRefName    string    `json:"baseRefName"`
 	HeadRefName    string    `json:"headRefName"`
+	HeadRefOid     string    `json:"headRefOid"`
 	Author         *gqlActor `json:"author"`
 	Labels         struct {
 		Nodes []PRLabel `json:"nodes"`
@@ -200,6 +204,8 @@ type gqlThread struct {
 	OriginalLine int    `json:"originalLine"`
 	StartLine    int    `json:"startLine"`
 	DiffSide     string `json:"diffSide"`
+	CanResolve   bool   `json:"viewerCanResolve"`
+	CanUnresolve bool   `json:"viewerCanUnresolve"`
 	Comments     struct {
 		Nodes []struct {
 			ID                string    `json:"id"`
@@ -290,7 +296,104 @@ func fetchConversation(ctx context.Context, owner, repo string, num int, token s
 
 	conv := buildConversation(head, timeline, threads)
 	conv.Truncated = truncated
+	if conv.Header.HeadSHA != "" {
+		// Checks are extra: a failure here leaves the panel empty, not the tab.
+		if checks, err := fetchCheckRuns(ctx, owner, repo, conv.Header.HeadSHA, token); err == nil {
+			conv.Checks = checks
+		}
+	}
 	return conv, nil
+}
+
+// fetchCheckRuns lists the check runs on a commit (REST; up to 100, which
+// covers any real CI setup).
+func fetchCheckRuns(ctx context.Context, owner, repo, sha, token string) ([]PRCheck, error) {
+	resp, err := githubRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha), token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github: check runs: %s", resp.Status)
+	}
+	var out struct {
+		CheckRuns []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion"`
+			StartedAt   string `json:"started_at"`
+			CompletedAt string `json:"completed_at"`
+			HTMLURL     string `json:"html_url"`
+			DetailsURL  string `json:"details_url"`
+		} `json:"check_runs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	checks := make([]PRCheck, 0, len(out.CheckRuns))
+	for _, c := range out.CheckRuns {
+		u := c.HTMLURL
+		if u == "" {
+			u = c.DetailsURL
+		}
+		checks = append(checks, PRCheck{Name: c.Name, Status: c.Status, Conclusion: c.Conclusion,
+			StartedAt: c.StartedAt, CompletedAt: c.CompletedAt, URL: u})
+	}
+	// Failures first, then running, then the rest, each by name.
+	rank := func(c PRCheck) int {
+		switch {
+		case c.Conclusion == "failure" || c.Conclusion == "timed_out" || c.Conclusion == "action_required" || c.Conclusion == "cancelled":
+			return 0
+		case c.Status != "completed":
+			return 1
+		}
+		return 2
+	}
+	sort.SliceStable(checks, func(i, j int) bool {
+		if rank(checks[i]) != rank(checks[j]) {
+			return rank(checks[i]) < rank(checks[j])
+		}
+		return checks[i].Name < checks[j].Name
+	})
+	return checks, nil
+}
+
+const resolveThreadMutation = `mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id isResolved } } }`
+const unresolveThreadMutation = `mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { id isResolved } } }`
+
+// handlePRThreadResolve resolves or unresolves a review thread on GitHub,
+// right away, like the button on GitHub: POST {threadId, resolved}.
+func (s *Server) handlePRThreadResolve(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) || !localPost(w, r) {
+		return
+	}
+	p := s.pr
+	if p.token == "" {
+		fail(w, http.StatusForbidden, "resolving threads needs a GitHub token")
+		return
+	}
+	var body struct {
+		ThreadID string `json:"threadId"`
+		Resolved bool   `json:"resolved"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || body.ThreadID == "" {
+		fail(w, http.StatusBadRequest, "threadId is required")
+		return
+	}
+	q := resolveThreadMutation
+	if !body.Resolved {
+		q = unresolveThreadMutation
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := githubGraphQL(ctx, p.token, q, map[string]any{"id": body.ThreadID}, nil); err != nil {
+		fail(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	p.mu.Lock()
+	p.conv = nil // the next load shows the new state
+	p.mu.Unlock()
+	writeJSON(w, map[string]any{"ok": true, "resolved": body.Resolved})
 }
 
 // ---------------------------------------------------------------- normalise
@@ -308,6 +411,7 @@ func buildConversation(pr *gqlPR, timeline []gqlTimelineNode, gthreads []gqlThre
 		th := ReviewThread{
 			ID: t.ID, Path: t.Path, Line: t.Line, OriginalLine: t.OriginalLine, StartLine: t.StartLine,
 			Side: strings.ToUpper(t.DiffSide), Resolved: t.IsResolved, Outdated: t.IsOutdated,
+			CanResolve: t.CanResolve, CanUnresolve: t.CanUnresolve,
 			Comments: []ThreadComment{},
 		}
 		if th.Side == "" {
@@ -410,7 +514,7 @@ func buildHeader(pr *gqlPR) PRHeader {
 	}
 	h.Number, h.Title, h.URL, h.CreatedAt, h.Body = pr.Number, pr.Title, pr.URL, pr.CreatedAt, pr.Body
 	h.Author, h.AvatarURL = pr.Author.login(), pr.Author.avatar()
-	h.BaseRef, h.HeadRef = pr.BaseRefName, pr.HeadRefName
+	h.BaseRef, h.HeadRef, h.HeadSHA = pr.BaseRefName, pr.HeadRefName, pr.HeadRefOid
 	switch {
 	case pr.Merged || strings.EqualFold(pr.State, "MERGED"):
 		h.State = "merged"

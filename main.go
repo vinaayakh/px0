@@ -48,7 +48,7 @@ func main() {
 		basePathFlag = flag.String("base-path", "", "base URL path prefix to serve endpoints and assets from (e.g. /rev-123/)")
 	)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "px0 %s - a code navigator\n\nusage:\n  px0 [flags] [file or directory]\n  px0 [flags] <pr-url>\n\nflags:\n", version)
+		fmt.Fprintf(os.Stderr, "px0 %s - a code navigator\n\nusage:\n  px0 [flags] [file or directory]\n  px0 [flags] <pr-url>\n  px0 [flags] inbox        pull requests waiting on you, no workspace needed\n\nflags:\n", version)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -91,7 +91,7 @@ func main() {
 	target := "."
 	var prProvider GitProvider
 	var prTarget PRTarget
-	isPR := false
+	isPR, isInbox := false, false
 	if flag.NArg() > 0 {
 		arg0 := flag.Arg(0)
 		if arg0 == "pr" {
@@ -99,9 +99,22 @@ func main() {
 		}
 		if provider, pt, ok := DetectPRURL(arg0); ok {
 			prProvider, prTarget, isPR = provider, pt, true
+		} else if _, statErr := os.Stat(arg0); arg0 == "inbox" && statErr != nil {
+			// `px0 inbox` (unless there is a file or folder called inbox here):
+			// the PR inbox with no workspace, served from an empty temp dir.
+			isInbox = true
 		} else {
 			target = arg0
 		}
+	}
+	inboxDir := ""
+	if isInbox {
+		d, err := os.MkdirTemp("", "px0-inbox-*")
+		if err != nil {
+			fatal(err)
+		}
+		inboxDir, target = d, d
+		defer os.RemoveAll(inboxDir)
 	}
 	if isPR && gitDisabled {
 		fatal(fmt.Errorf("px0: git is required for PR review; remove -no-git"))
@@ -176,6 +189,9 @@ func main() {
 	srv := &http.Server{Handler: pxSrv}
 
 	url := viewerURL(addr, initialFile, initialLine, configuredBasePath)
+	if isInbox {
+		url = withQueryParam(url, "view", "inbox")
+	}
 	uiHeading("px0 "+version, nil, os.Stdout)
 	if pr != nil {
 		prTitle := fmt.Sprintf("#%d %s", pr.meta.Number, pr.meta.Title)
@@ -282,6 +298,9 @@ func main() {
 	agent.Close()
 	pxSrv.CloseThreads()
 	pr.Close()
+	if inboxDir != "" {
+		os.RemoveAll(inboxDir) // os.Exit below skips the deferred removal
+	}
 
 	if interrupted {
 		tel.Close("interrupted")
@@ -377,6 +396,22 @@ func splitTargetLine(target string) (path string, line int) {
 		return rest, num
 	}
 	return target, 0
+}
+
+// withQueryParam sets one query parameter on a viewer URL, giving it a path
+// of "/" when it has none.
+func withQueryParam(raw, key, value string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	q := u.Query()
+	q.Set(key, value)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func viewerURL(addr, initialFile string, initialLine int, basePath ...string) string {

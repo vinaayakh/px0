@@ -109,6 +109,7 @@ type PRHeader struct {
 	BodyHTML           string    `json:"bodyHtml"`
 	BaseRef            string    `json:"baseRef"`
 	HeadRef            string    `json:"headRef"`
+	HeadSHA            string    `json:"headSha,omitempty"`
 	Labels             []PRLabel `json:"labels"`
 	Assignees          []string  `json:"assignees"`
 	RequestedReviewers []string  `json:"requestedReviewers"`
@@ -134,6 +135,8 @@ type ReviewThread struct {
 	Side         string          `json:"side"` // LEFT or RIGHT
 	Resolved     bool            `json:"resolved"`
 	Outdated     bool            `json:"outdated"`
+	CanResolve   bool            `json:"canResolve,omitempty"`
+	CanUnresolve bool            `json:"canUnresolve,omitempty"`
 	DiffHunk     string          `json:"diffHunk,omitempty"`
 	ReviewID     string          `json:"reviewId,omitempty"`
 	Comments     []ThreadComment `json:"comments"`

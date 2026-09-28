@@ -240,7 +240,9 @@ func TestReviewTriage(t *testing.T) {
 	defer func() { githubHTTPClient.Transport = orig }()
 	var captured []byte
 	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		captured, _ = io.ReadAll(req.Body)
+		if req.Body != nil {
+			captured, _ = io.ReadAll(req.Body)
+		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 	})
 	if code, resp := agentPostJSON(t, s, "/api/pr/submit", map[string]string{"event": "COMMENT"}); code != 200 {

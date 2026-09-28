@@ -3031,3 +3031,65 @@ body.inbox-mode #btn-collapse-tree, body.inbox-mode #btn-expand-tree, body.inbox
 .gr-ref-head, .gr-ref-head.gr-ref-local { background: var(--accent); color: var(--on-accent, #fff); border-color: var(--accent); }
 .gr-role { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 999px; font-size: 10px; border: 1px dashed var(--accent); color: var(--accent-fg); }
 .gr-empty { padding: 16px; }
+.gr-row.sel { background: var(--bg3); box-shadow: inset 3px 0 0 var(--accent); }
+.gr-row.match .gr-subject { color: var(--fg); }
+.gr-row.match { background: var(--mark); }
+.gr-row.match-cur { background: var(--mark); box-shadow: inset 3px 0 0 var(--mark-active); }
+.gr-searchbox { display: inline-flex; align-items: center; gap: 3px; }
+.gr-search {
+  width: 220px; padding: 3px 7px; font: 12px var(--ui); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); outline: none;
+}
+.gr-search:focus { border-color: var(--accent); }
+.gr-search-n { min-width: 44px; font: 11px var(--mono); color: var(--faint); text-align: right; }
+.gr-copy { margin-left: auto; font-size: 10px; padding: 0 6px; }
+.gr-detail {
+  width: 380px; flex: none; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
+  border-left: 1px solid var(--line); background: var(--bg2);
+}
+.gr-detail[hidden] { display: none; }
+.gr-detail-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg2); }
+.gr-detail-sha { font-size: 12px; }
+.gr-detail-subject { padding: 10px 12px 4px; font-weight: 600; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.gr-detail-refs { padding: 2px 12px 4px; }
+.gr-detail-body { margin: 4px 12px; padding: 0; white-space: pre-wrap; font: 12px/1.5 var(--mono); color: var(--dim); background: none; border: 0; }
+.gr-detail-meta { padding: 6px 12px 10px; font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--line); }
+.gr-detail-files-head { padding: 7px 12px; font: 600 11px var(--ui); text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.gr-file { border-top: 1px solid var(--line); }
+.gr-file-head { display: flex; align-items: center; gap: 6px; padding: 4px 12px; cursor: pointer; }
+.gr-file-head:hover { background: var(--bg3); }
+.gr-fstat { flex: none; width: 14px; font: 600 11px var(--mono); text-align: center; }
+.gr-fstat-A { color: var(--gi); }
+.gr-fstat-D { color: var(--gd); }
+.gr-fstat-M, .gr-fstat-R, .gr-fstat-C { color: var(--accent-fg); }
+.gr-fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); direction: rtl; text-align: left; }
+.gr-fnum { flex: none; font: 11px var(--mono); }
+.gr-add { color: var(--gi); }
+.gr-del { color: var(--gd); }
+.gr-hunk { color: var(--accent-fg); }
+.gr-diff { display: none; }
+.gr-file.open .gr-diff { display: block; }
+.gr-diff pre { margin: 0; padding: 6px 12px; overflow-x: auto; font: 11.5px/1.45 var(--mono); background: var(--bg); border-top: 1px solid var(--line); }
+
+/* ---------- M5: conversation checks, drafts panel, inbox tools ---------- */
+.cv-checks { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 6px; }
+.cv-checks > summary { padding: 7px 12px; cursor: pointer; font-size: 13px; background: var(--bg2); border-radius: 6px; }
+.cv-checks[open] > summary { border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; }
+.md ul.cv-check-list { list-style: none; margin: 0; padding: 4px 0; }
+.md ul.cv-check-list li { display: flex; align-items: center; gap: 8px; margin: 0; padding: 3px 12px; font-size: 13px; }
+.cv-check-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-check-state, .cv-check-dur { color: var(--faint); font-size: 12px; }
+.cv-ok-t { color: var(--gi); }
+.cv-bad-t { color: var(--err); }
+.cv-wait-t { color: var(--warn, #e5a50a); }
+.cv-thread > summary .opt { margin-left: 6px; }
+.cv-flash { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow .4s; }
+.pr-draft-head { padding: 4px 10px 0; }
+.pr-draft-sugg { margin: 4px 0 0; padding: 4px 8px; font: 11.5px/1.4 var(--mono); background: var(--gi-bg); border-radius: var(--r); white-space: pre-wrap; }
+.inbox-tools { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.inbox-filter {
+  flex: 1; min-width: 0; padding: 3px 7px; font: 12px var(--ui); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); outline: none;
+}
+.inbox-filter:focus { border-color: var(--accent); }
+.inbox-sort { font: 11px var(--ui); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); }
