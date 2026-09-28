@@ -150,10 +150,12 @@ func TestStartReviewCleanRun(t *testing.T) {
 }
 
 func TestStartReviewMarksTaintedWhenHarnessWrites(t *testing.T) {
-	skipWithoutShellHarness(t)
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
 	root := gitRepo(t)
-	s := agentServer(t, root, writeHarness(t, "printf 'sneaky\\n' >> keep.go\n"))
-	withFakeReadOnlyPreset(t, s, s.agent.args[0])
+	t.Setenv("PX0_HELPER_WRITE", filepath.Join(root, "keep.go"))
+	s := helperHarnessServer(t, root) // the helper appends to keep.go
 
 	job, err := s.agent.StartReview("review #1", "just look", reviewJobOpts{TmpDir: t.TempDir()})
 	if err != nil {

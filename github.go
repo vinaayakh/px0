@@ -340,8 +340,12 @@ type prComment struct {
 	RunID       int64  `json:"runId,omitempty"`       // the AI review run that produced it
 	Fingerprint string `json:"fingerprint,omitempty"` // path + quote + body hash, for dismiss memory
 	// SubjectType "file" marks a comment on the file as a whole (Line is then
-	// only a hint), used when an AI anchor could not be placed on a diff line.
+	// only a hint), used when an AI anchor could not be placed on a diff line;
+	// "summary" marks one about a file outside the PR, which can only go in
+	// the review body.
 	SubjectType string `json:"subjectType,omitempty"`
+
+	AI *aiSuggestion `json:"ai,omitempty"` // set on AI-origin drafts (review.go)
 }
 
 const (
@@ -389,11 +393,11 @@ func submitReview(ctx context.Context, owner, repo string, num int, token, commi
 	}{CommitID: commitID, Event: event}
 	var fileNotes []string
 	for _, c := range comments {
-		if c.SubjectType == "file" {
-			fileNotes = append(fileNotes, fmt.Sprintf("**`%s`**\n\n%s", c.Path, c.Body))
+		if c.SubjectType == "file" || c.SubjectType == "summary" {
+			fileNotes = append(fileNotes, fmt.Sprintf("**`%s`**\n\n%s", c.Path, c.submitBody()))
 			continue
 		}
-		rc := reviewComment{Path: c.Path, Line: c.Line, Side: c.Side, Body: c.Body}
+		rc := reviewComment{Path: c.Path, Line: c.Line, Side: c.Side, Body: c.submitBody()}
 		if c.StartLine > 0 && c.StartLine < c.Line {
 			rc.StartLine, rc.StartSide = c.StartLine, c.Side
 		}

@@ -43,6 +43,8 @@ type prSession struct {
 
 	comments []prComment
 	nextID   int64
+
+	review *reviewState // AI review runs (review.go)
 }
 
 // ErrPRMergedCancelled is returned when opening an already-merged PR is cancelled.
@@ -336,17 +338,16 @@ func countSubmittable(cs []prComment) int {
 	return n
 }
 
-// splitSubmittable partitions drafts into what the next review sends and
-// what stays behind (pending or dismissed AI suggestions).
-func splitSubmittable(cs []prComment) (send, keep []prComment) {
+// submittableDrafts is what the next review sends, and what the session file
+// keeps across a restart: human drafts plus accepted or edited suggestions.
+func submittableDrafts(cs []prComment) []prComment {
+	var out []prComment
 	for _, c := range cs {
 		if c.submittable() {
-			send = append(send, c)
-		} else if c.Status != prStatusDismissed {
-			keep = append(keep, c)
+			out = append(out, c)
 		}
 	}
-	return send, keep
+	return out
 }
 
 func nonNilStrings(s []string) []string {
@@ -486,7 +487,7 @@ func (s *Server) handlePRComments(w http.ResponseWriter, r *http.Request) {
 			Origin: prOriginHuman, Status: prStatusAccepted}
 		p.comments = append(p.comments, c)
 		if s.session != nil {
-			s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = p.comments })
+			s.persistDrafts(p)
 		}
 		p.mu.Unlock()
 		writeJSON(w, c)
@@ -513,7 +514,7 @@ func (s *Server) handlePRCommentDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.session != nil {
-		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = p.comments })
+		s.persistDrafts(p)
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -548,9 +549,10 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only human drafts and AI suggestions the reviewer accepted or edited are
-	// sent; pending suggestions stay for the next review, dismissed ones go.
+	// sent. Pending suggestions stay for the next review; dismissed ones stay in
+	// memory so a re-run can recognise them.
 	p.mu.Lock()
-	comments, _ := splitSubmittable(p.comments)
+	comments := submittableDrafts(p.comments)
 	p.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -566,14 +568,12 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	var remaining []prComment
 	for _, c := range p.comments {
-		if !sent[c.ID] && c.Status != prStatusDismissed {
+		if !sent[c.ID] {
 			remaining = append(remaining, c)
 		}
 	}
 	p.comments = remaining
-	if s.session != nil {
-		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = remaining })
-	}
+	s.persistDrafts(p)
 	p.mu.Unlock()
 	writeJSON(w, map[string]any{"ok": true})
 }

@@ -70,7 +70,7 @@ func TestPRCommentSubmittable(t *testing.T) {
 		}
 	}
 
-	send, keep := splitSubmittable([]prComment{
+	send := submittableDrafts([]prComment{
 		{ID: 1, Origin: prOriginHuman, Status: prStatusAccepted},
 		{ID: 2, Origin: prOriginAI, Status: prStatusPending},
 		{ID: 3, Origin: prOriginAI, Status: prStatusEdited},
@@ -78,9 +78,6 @@ func TestPRCommentSubmittable(t *testing.T) {
 	})
 	if len(send) != 2 || send[0].ID != 1 || send[1].ID != 3 {
 		t.Errorf("send = %+v, want ids 1 and 3", send)
-	}
-	if len(keep) != 1 || keep[0].ID != 2 {
-		t.Errorf("keep = %+v, want only the pending suggestion", keep)
 	}
 }
 
@@ -168,8 +165,8 @@ func TestPRSubmitSendsOnlyAcceptedAndKeepsPending(t *testing.T) {
 			t.Errorf("payload must not carry %q: %s", not, sent)
 		}
 	}
-	if len(s.pr.comments) != 1 || s.pr.comments[0].ID != 2 {
-		t.Fatalf("after submit, drafts = %+v, want only the pending suggestion", s.pr.comments)
+	if len(s.pr.comments) != 2 || s.pr.comments[0].ID != 2 || s.pr.comments[1].ID != 4 {
+		t.Fatalf("after submit, drafts = %+v, want the pending and the dismissed suggestion", s.pr.comments)
 	}
 }
 

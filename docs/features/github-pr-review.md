@@ -75,13 +75,27 @@ Drafted review comments appear in the PR top bar and inline across files:
 - **⚡ Batch Apply**: Lets you apply all drafted review comments across the entire pull request in one go using your configured coding agent harness. The agent reads your comments as instructions and modifies the code directly in the PR worktree.
 - Comments remain drafts in memory until either batch-applied or formally submitted.
 
-### 5. Submitting Formal Reviews
+### 5. AI Review: Suggestions You Curate
+**AI Review** in the PR bar opens the AI Review pane in the right inspector. Pick a harness and model, optionally type a focus ("security only"), and press **Run AI Review**. The harness reviews the PR read-only in the checkout: it can open any file and read `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`, but its file-writing tools are turned off. Only harnesses px0 can run read-only are offered: Claude Code and Codex.
+
+What comes back are *suggestions*, not comments. Nothing is posted until you act:
+- Each suggestion shows its severity, category, confidence, the line it is on and, when it proposes code, the change. Low-confidence ones are collapsed.
+- **A** accepts, **E** edits then accepts, **D** dismisses, **J**/**K** move, **Enter** opens the line in the diff. **Accept all** per file and **Dismiss nits** work on many at once.
+- Accepted and edited suggestions become ordinary drafts. They are submitted with your review, under your name, and **⚡ Batch Apply** can hand them to a harness like any other draft. A proposed change is posted as a GitHub suggestion block.
+- Pending suggestions have their own star marker in the diff gutter, distinct from your drafts and posted comments.
+- The AI's summary pre-fills an empty review body, and its verdict is highlighted on the Comment or Request Changes button. px0 never selects Approve for you.
+
+px0 checks every suggestion against the real diff before showing it, because models misreport line numbers. A suggestion whose line and quoted text agree stays put; one whose quoted text is found on a single nearby line is moved there and marked **re-anchored**; anything else becomes a **file-level** comment (posted in the review body under the file's name), and a comment on a file outside the PR becomes a **summary note**. None are dropped. If the harness changes a file anyway, the run is flagged and px0 leaves the change for you to inspect.
+
+The review instructions are a markdown skill: `review.skillPath` in Settings, else `~/.px0/skills/review.md`, else the built-in skill. px0 always appends its output format, so a custom skill cannot break parsing. Running again replaces the pending suggestions; accepted, edited and dismissed ones stay.
+
+### 6. Submitting Formal Reviews
 The PR review bar above the editor tabs hosts the overall review summary and verdict actions:
 - **Comment**: Submit feedback without an approval status (available to all reviewers).
 - **Approve** / **Request Changes**: Available when your authenticated token has repository push access.
-- Submitting posts a single review payload containing all draft line comments and the review body.
+- Submitting posts a single review payload containing all draft line comments and the review body. Pending and dismissed AI suggestions are never included.
 
-### 6. Editing, Committing, and Pushing Back
+### 7. Editing, Committing, and Pushing Back
 A PR checkout is a real git worktree, and the git panel works inside it exactly as it does in a plain workspace:
 - **Edit and commit**: Make a change (by hand, or by dispatching a coding agent on the checkout), stage it, and either write a commit message yourself or click **Commit with AI**.
 - **Push**: Sends the checkout's `HEAD` to the pull request's *actual* head branch on its actual repository — a fork included — not wherever the checkout happens to live locally.
@@ -130,6 +144,10 @@ px0 abstracts forge interactions through a clean, minimal `GitProvider` interfac
 | `Cmd/Ctrl+D` | Active tab | Toggle side-by-side / unified diff against merge-base |
 | Command Palette (`Cmd/Ctrl+K`) | Command Palette → **Git: Open Pull Request…** | Launch a new PR review tab |
 | **`⚡ Batch Apply`** | PR header bar | Dispatch all drafted comments to local AI coding harness |
+| **AI Review** | PR header bar | Open the AI Review pane (run a read-only review, triage suggestions) |
+| `J` / `K` | AI Review pane | Next / previous suggestion |
+| `A` / `E` / `D` | AI Review pane | Accept / edit then accept / dismiss the selected suggestion |
+| `Enter` | AI Review pane | Open the suggestion's line in the diff |
 | **Submit Review** | PR header bar | Submit Approve / Request Changes / Comment to remote forge |
 | **Pull** | Sidebar git panel | Fast-forward the checkout onto the PR's current head; refuses on divergence |
 | **Push** | Sidebar git panel | Push the checkout's `HEAD` to the PR's actual head branch |

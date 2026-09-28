@@ -10,7 +10,7 @@ Two core px0 tenets shape pull request reviews:
 
 - **Zero-dependency shell-out**: Like `git.go` (which links no Go git library), px0 avoids external forge SDKs. `github.go` uses standard Go `net/http` against the GitHub REST API, plus an optional shell-out to `gh auth token`. Checkout itself uses standard `git fetch`, `git worktree add`, or `git clone` via `exec.Command`.
 - **Stateless on disk**: px0 maintains no persistent cache in `~/.px0`. A PR checkout is strictly process-scoped: `checkoutPR` (`pr.go`) places the worktree in `os.MkdirTemp("", "px0-pr-*")`, and `prSession.Close` removes it upon exit (`Ctrl+C` or normal shutdown). This ensures zero leftover disk clutter and prevents stale cache bugs.
-- **In-memory draft comments**: Draft comments live in `prSession.comments` as a thread-safe, mutex-guarded slice in server memory. They never touch disk and vanish when the process exits (submitted or discarded).
+- **Draft comments**: Draft comments live in `prSession.comments` as a thread-safe, mutex-guarded slice in server memory. Submittable drafts (human drafts and accepted or edited AI suggestions) are also written to the workspace session file under `~/.px0` (`persistDrafts`), so a restart of the same PR keeps them; pending and dismissed AI suggestions stay in memory only. AI review is described in [ai-review.md](ai-review.md).
 
 ---
 
@@ -157,7 +157,7 @@ Users can delegate all drafted PR comments directly to an AI coding agent (Claud
 ### Formal Review Submission
 - `POST /api/pr/submit`: Requires auth token.
 - Calls `provider.SubmitReview` which constructs a single review payload containing the head commit SHA, the submittable drafts (human drafts plus accepted or edited AI suggestions), and the review body/event (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`). A range sends `start_line`/`start_side`. The create-review endpoint anchors every comment to a line, so file-level comments are folded into the review body under their path.
-- On success, removes the drafts it sent and any dismissed suggestions; pending suggestions stay for the next review.
+- On success, removes the drafts it sent. Pending suggestions stay for the next review, and dismissed ones stay in memory so a re-run can recognise them. Each AI comment is posted with `submitBody()`: its text plus a ```` ```suggestion ```` block when it carries replacement code for a RIGHT-side line (a plain code block otherwise).
 
 ---
 

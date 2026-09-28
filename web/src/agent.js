@@ -80,6 +80,7 @@ export function applyAgentMeta() {
   for (const picker of extraPickers) updateSessionMeta(picker);
   syncBatchMeta();
   syncGitPanelMeta();
+  emit('agent:meta'); // the harness selection or its list changed
 }
 
 function updateSessionMeta(session) {

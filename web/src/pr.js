@@ -14,6 +14,7 @@ import { reloadWorkspace } from './agent.js';
 import { openFile } from './tabs.js';
 import { layout, render } from './renderer.js';
 import { openSettings } from './settings.js';
+import { emit } from './bus.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -82,10 +83,16 @@ async function refreshExistingComments() {
   }
 }
 
-async function refreshComments() {
+// AI suggestions (review.js) live in the same server-side draft list; only
+// the ones the reviewer accepted or edited are drafts here.
+function isDraft(c) {
+  return c.origin !== 'ai' || c.status === 'accepted' || c.status === 'edited';
+}
+
+export async function refreshComments() {
   try {
     const j = await api('/api/pr/comments');
-    comments = j.comments || [];
+    comments = (j.comments || []).filter(isDraft);
     renderBar();
     renderCommentsPanel();
     renderMarkersForActiveDoc();
@@ -260,6 +267,8 @@ async function submitReview(event) {
   try {
     await apiPostJson('/api/pr/submit', { event, body });
     comments = [];
+    emit('pr:submitted');
+    for (const b of document.querySelectorAll('.pr-suggested')) b.classList.remove('pr-suggested');
     if (bodyEl) bodyEl.value = '';
     closeAllComposers();
     renderBar();
@@ -298,6 +307,20 @@ function findDiffRowEl(path, side, line) {
 function flashDiffRow(el) {
   el.classList.add('pr-line-flash');
   setTimeout(() => el.classList.remove('pr-line-flash'), 1100);
+}
+
+// Opens path in diff view and brings the row for side:line into view. The
+// diff may still be drawing right after the open, so one late retry.
+export async function revealPRLine(path, side, line) {
+  if (!findDiffRowEl(path, side, line)) {
+    await openFile(path, { line: side === 'LEFT' ? undefined : line, view: 'diff' });
+  }
+  const show = () => {
+    const el = findDiffRowEl(path, side, line);
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); flashDiffRow(el); }
+    return !!el;
+  };
+  if (!show()) setTimeout(show, 300);
 }
 
 /* ---------- inline draft comment composer ----------
@@ -452,6 +475,25 @@ function closeAllComposers() {
 
 const COMMENT_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
 
+// review.js draws its own markers for pending AI suggestions on the same rows.
+let extraMarkers = null;
+export function setPRMarkerHook(fn) { extraMarkers = fn; }
+export function renderPRMarkers() { renderMarkersForActiveDoc(); }
+
+// Pre-fills the review form from an AI review: the summary goes in the body
+// only when it is empty, and the suggested verdict is highlighted, never
+// chosen. An approve verdict is never highlighted either.
+export function prefillReview(summary, verdict) {
+  const bodyEl = $('#pr-review-body');
+  if (bodyEl && summary && !bodyEl.value.trim()) {
+    bodyEl.value = summary;
+    bodyEl.dispatchEvent(new Event('input'));
+  }
+  for (const b of document.querySelectorAll('.pr-suggested')) b.classList.remove('pr-suggested');
+  const target = verdict === 'request_changes' ? $('#pr-submit-request-changes') : $('#pr-submit-comment');
+  if (target && !target.hidden) target.classList.add('pr-suggested');
+}
+
 function renderMarkersForActiveDoc() {
   if (!meta) return;
   // Runs whether or not a diff is on screen right now, so a composer whose
@@ -478,17 +520,19 @@ function renderMarkersForActiveDoc() {
     existingByKey.get(key).push(c);
   }
   for (const el of diffview.querySelectorAll('.pr-comment-mark')) el.remove();
+  const rows = [];
   for (const el of diffview.querySelectorAll('[data-l]:not([data-reviewable="0"]), [data-old-l]:not([data-reviewable="0"])')) {
     const isOldOnly = el.dataset.oldL !== undefined && el.dataset.l === undefined;
     const side = isOldOnly ? 'LEFT' : 'RIGHT';
     const line = isOldOnly ? +el.dataset.oldL : +el.dataset.l;
+    rows.push({ el, side, line });
     const key = side + ':' + line;
     const drafts = draftsByKey.get(key);
     const existing = existingByKey.get(key);
     el.classList.toggle('pr-has-comment', !!drafts || !!existing);
     if (!drafts && !existing) continue;
     const badge = document.createElement('span');
-    badge.className = 'pr-comment-mark';
+    badge.className = 'pr-comment-mark' + (drafts?.some(c => c.origin === 'ai') ? ' ai' : '');
     const count = (existing?.length || 0) + (drafts?.length || 0);
     badge.title = 'View ' + count + ' comment' + (count === 1 ? '' : 's');
     badge.innerHTML = COMMENT_ICON;
@@ -498,6 +542,7 @@ function renderMarkersForActiveDoc() {
     });
     el.querySelector('.diff-code')?.before(badge);
   }
+  extraMarkers?.(d.path, rows);
 }
 
 /* ---------- bottom panel: existing comments + drafts, always open ---------- */
@@ -689,8 +734,9 @@ function reviewCommentCardHtml(c) {
 }
 
 function draftCardHtml(c) {
-  return '<div class="pr-comment-card draft">' +
-    '<div class="pr-issue-comment-head"><span class="pr-issue-comment-author">You (draft, not yet submitted)</span></div>' +
+  const who = c.origin === 'ai' ? 'AI suggestion you accepted (draft, not yet submitted)' : 'You (draft, not yet submitted)';
+  return '<div class="pr-comment-card draft' + (c.origin === 'ai' ? ' ai' : '') + '">' +
+    '<div class="pr-issue-comment-head"><span class="pr-issue-comment-author">' + who + '</span></div>' +
     '<div class="pr-issue-comment-body">' + esc(c.body) + '</div>' +
     '<div class="pr-comment-card-actions">' +
       '<button class="pr-comment-delete-btn" data-draft-id="' + c.id + '">Delete draft</button>' +

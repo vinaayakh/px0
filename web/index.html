@@ -113,6 +113,7 @@
         <span id="pr-diff-warning" class="pr-diff-warning" hidden>&#9888; diff base unresolved</span>
         <button id="pr-readonly-note" class="pr-readonly-note" type="button" hidden title="Set GITHUB_TOKEN, set GH_TOKEN, or run 'gh auth login' -- or click to connect">No GitHub token &mdash; click to connect</button>
         <span id="pr-draft-count" class="pr-draft-count"></span>
+        <button id="pr-ai-review" class="footer-btn pr-btn-ai" type="button" title="Open AI Review: a coding harness reviews this PR read-only, and its suggestions stay drafts until you accept them">AI Review<span id="pr-ai-count" class="pr-ai-count" hidden></span></button>
       </div>
       <div class="pr-bar-row pr-review-row">
         <textarea id="pr-review-body" class="pr-review-body" rows="1" spellcheck="false" autocomplete="off" placeholder="Review summary / verdict comment (optional)..."></textarea>
@@ -361,6 +362,7 @@
   <aside id="right-side">
     <header class="inspector-head">
       <div class="inspector-tabs">
+        <button class="inspector-tab" data-itab="review" id="tab-review" title="AI review suggestions for this PR" hidden>AI Review<span class="rv-tab-count" id="rv-tab-count" hidden></span></button>
         <button class="inspector-tab" data-itab="threads" id="tab-threads" title="Long-running conversations with a coding harness ({Alt+T} on a selection)" hidden>Threads<span class="thr-tab-count" hidden></span><span class="thr-tab-dot" hidden></span></button>
         <button class="inspector-tab" data-itab="problems" id="tab-problems" title="Compiler, type, and linter problems in active file ({Mod+Shift+M})">Problems<span class="prob-tab-badge" id="prob-tab-badge" hidden></span></button>
         <button class="inspector-tab active" data-itab="refs" title="View references across workspace">References</button>
@@ -372,6 +374,39 @@
         <button id="btn-close-right" class="mini" title="Close inspector (Esc)">&#10005;</button>
       </div>
     </header>
+
+    <!-- Right Pane: AI Review (PR sessions only). A harness reviews the PR
+         read-only; its suggestions are triaged here and only accepted or
+         edited ones become drafts. web/src/review.js owns it. -->
+    <section class="inspector-pane" id="pane-right-review">
+      <div class="rv-run" id="rv-run">
+        <div class="agent-meta">
+          <span class="agent-meta-label">Model</span>
+          <select class="agent-harness-select" id="rv-harness" title="Coding harness"></select>
+          <select class="agent-model-select" id="rv-model" title="Model"></select>
+        </div>
+        <input id="rv-focus" class="rv-focus" type="text" spellcheck="false" autocomplete="off" placeholder="Focus (optional), e.g. security only">
+        <div class="rv-run-row">
+          <button id="rv-start" class="footer-btn rv-start" type="button">Run AI Review</button>
+          <button id="rv-cancel" class="footer-btn" type="button" hidden>Cancel</button>
+          <span id="rv-status" class="rv-status"></span>
+        </div>
+        <div id="rv-alert" class="rv-alert" hidden></div>
+      </div>
+      <div id="rv-summary" class="rv-summary" hidden></div>
+      <div class="inspector-bar rv-bar">
+        <span class="rv-filters" id="rv-filters">
+          <button class="opt on" data-rv-filter="pending" type="button" title="Suggestions still to triage">Pending</button>
+          <button class="opt" data-rv-filter="all" type="button" title="Every suggestion, including accepted and dismissed">All</button>
+        </span>
+        <span class="grow"></span>
+        <button class="opt" id="rv-dismiss-nits" type="button" title="Dismiss every pending nit">Dismiss nits</button>
+      </div>
+      <div class="panel-body rv-list" id="rv-list" tabindex="0">
+        <div class="hint">Run an AI review to get suggested comments. Nothing is posted until you accept a suggestion and submit the review.</div>
+      </div>
+      <div class="rv-keys hint"><b>J</b>/<b>K</b> move · <b>A</b> accept · <b>E</b> edit · <b>D</b> dismiss · <b>Enter</b> open</div>
+    </section>
 
     <!-- Right Pane 0: Problems / Diagnostics for active file -->
     <section class="inspector-pane" id="pane-right-problems">

@@ -26,6 +26,7 @@ import { initImageViewer } from './imageview.js';
 import { initGitStream } from './gitstream.js';
 import { initGitPanel } from './gitpanel.js';
 import { initPR } from './pr.js';
+import { initReview } from './review.js';
 import { initLineComment } from './linecomment.js';
 import { initProblems } from './problems.js';
 
@@ -90,6 +91,7 @@ initProblems();
   updateSidebarToggleState();
   applyAgentMeta();
   initPR();
+  initReview();
   document.title = S.meta.name + ' - px0';
   $('#root-name').textContent = S.meta.name;
   $('#root-name').title = S.meta.root;
