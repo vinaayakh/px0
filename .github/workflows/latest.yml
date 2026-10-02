@@ -1,0 +1,78 @@
+name: Latest build
+
+# Rebuilds px0 on every push to main and replaces the assets of the rolling
+# "latest" pre-release, so download links stay the same:
+#   https://github.com/<owner>/<repo>/releases/download/latest/px0-<os>-<arch>[.exe]
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-build
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    name: Build & publish latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bundle web assets
+        run: node ./scripts/build-web.js
+
+      - name: Build binaries
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w"
+          if [ -n "$POSTHOG_KEY" ]; then
+            LDFLAGS="$LDFLAGS -X main.posthogKey=$POSTHOG_KEY"
+          fi
+          TARGETS="
+          linux/amd64 linux/arm64
+          darwin/amd64 darwin/arm64
+          windows/amd64 windows/arm64
+          "
+          for t in $TARGETS; do
+            os=${t%/*}
+            arch=${t#*/}
+            ext=""
+            [ "$os" = "windows" ] && ext=".exe"
+            name="px0-${os}-${arch}${ext}"
+            printf "Building %-24s ... " "$name"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="$LDFLAGS" -o "dist/$name" .
+            printf "done (%s)\n" "$(du -h "dist/$name" | cut -f1)"
+          done
+          cd dist && sha256sum px0-* > checksums.txt && cat checksums.txt
+
+      - name: Replace latest pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest dist/* \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Latest build (${GITHUB_SHA::7})" \
+            --notes "Built automatically from \`${GITHUB_SHA::7}\` on \`main\`. Not a versioned release; for stable builds use a \`v*\` release."
