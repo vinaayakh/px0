@@ -45,13 +45,19 @@ const (
 // an extra readable directory where the harness supports that. A preset
 // without it cannot run read-only jobs; the worktree snapshot taken around
 // every run is only the backstop, never the sole guard.
+//
+// StructuredArgs, added to a read-only run that passes a JSON Schema, make
+// the harness return its result as JSON validated against {schema} rather
+// than as free text, so an AI review's result does not depend on how the
+// model chose to end its last message.
 type agentPreset struct {
-	Name         string
-	Args         []string
-	ReadOnlyArgs []string
-	ModelFlag    string
-	DefaultModel string
-	Models       []string
+	Name           string
+	Args           []string
+	ReadOnlyArgs   []string
+	StructuredArgs []string
+	ModelFlag      string
+	DefaultModel   string
+	Models         []string
 }
 
 var agentPresets = []agentPreset{
@@ -64,9 +70,13 @@ var agentPresets = []agentPreset{
 		ReadOnlyArgs: []string{"claude", "--permission-mode", "default",
 			"--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit",
 			"--add-dir", "{tmpdir}", "-p", "{prompt}"},
-		ModelFlag:    "--model",
-		DefaultModel: "haiku",
-		Models:       []string{"haiku", "sonnet", "opus"},
+		// -p prints only the last message's text, and a long review often
+		// ends with a sign-off after the result: with a schema the result
+		// comes back as structured_output in a JSON envelope instead.
+		StructuredArgs: []string{"--output-format", "json", "--json-schema", "{schema}"},
+		ModelFlag:      "--model",
+		DefaultModel:   "haiku",
+		Models:         []string{"haiku", "sonnet", "opus"},
 	},
 	{
 		Name:         "gemini",
@@ -380,6 +390,7 @@ type agentJob struct {
 	BatchCount int              `json:"batchCount,omitempty"` // Number of items in batch review edit
 	Items      []agentBatchItem `json:"items,omitempty"`      // Detailed batch items if multi-file edit
 	ReadOnly   bool             `json:"readOnly,omitempty"`   // Ran with the preset's read-only argv (StartReview)
+	Structured bool             `json:"structured,omitempty"` // Ran with StructuredArgs: stdout is the harness's JSON envelope
 	Tainted    bool             `json:"tainted,omitempty"`    // A read-only run changed the working tree anyway
 
 	ranges  []agentRange
@@ -558,25 +569,55 @@ func resolveAgentSpec(spec, model string) (string, []string, string, error) {
 // presetArgv splices the model flag into a preset's argv template just before
 // the prompt (or before the flag that introduces it, e.g. "-p {prompt}").
 func presetArgv(p agentPreset, tmpl []string, model string) []string {
+	if p.ModelFlag == "" || model == "" {
+		return append([]string(nil), tmpl...)
+	}
+	return insertBeforePrompt(tmpl, p.ModelFlag, model)
+}
+
+// insertBeforePrompt returns argv with extra placed just before the prompt,
+// or before the flag that introduces it ("-p {prompt}").
+func insertBeforePrompt(argv []string, extra ...string) []string {
 	promptIdx := -1
-	for i, arg := range tmpl {
+	for i, arg := range argv {
 		if arg == "{prompt}" {
 			promptIdx = i
 			break
 		}
 	}
-	args := make([]string, 0, len(tmpl)+2)
 	insertIdx := promptIdx
-	if promptIdx > 0 && strings.HasPrefix(tmpl[promptIdx-1], "-") {
+	if promptIdx > 0 && strings.HasPrefix(argv[promptIdx-1], "-") {
 		insertIdx = promptIdx - 1
 	}
-	for i, arg := range tmpl {
-		if i == insertIdx && p.ModelFlag != "" && model != "" {
-			args = append(args, p.ModelFlag, model)
+	args := make([]string, 0, len(argv)+len(extra))
+	for i, arg := range argv {
+		if i == insertIdx {
+			args = append(args, extra...)
 		}
 		args = append(args, arg)
 	}
+	if insertIdx < 0 {
+		args = append(args, extra...)
+	}
 	return args
+}
+
+// structuredArgs is p's StructuredArgs with schema filled in, or nil when the
+// harness has none or schema is empty. A harness launched through a .cmd or
+// .bat wrapper (an npm install on Windows) gets none either: cmd.exe parses
+// the arguments again, and the quotes in a JSON Schema do not survive it.
+func structuredArgs(p agentPreset, bin, schema string) []string {
+	if schema == "" || len(p.StructuredArgs) == 0 {
+		return nil
+	}
+	if ext := strings.ToLower(filepath.Ext(bin)); ext == ".cmd" || ext == ".bat" {
+		return nil
+	}
+	out := make([]string, len(p.StructuredArgs))
+	for i, a := range p.StructuredArgs {
+		out[i] = strings.ReplaceAll(a, "{schema}", schema)
+	}
+	return out
 }
 
 // errAgentNoReadOnly refuses a read-only job on a harness px0 has no verified
@@ -585,8 +626,10 @@ func presetArgv(p agentPreset, tmpl []string, model string) []string {
 var errAgentNoReadOnly = errors.New("the selected harness has no read-only mode px0 can enforce")
 
 // readOnlyArgv resolves the read-only argv for the harness currently selected,
-// with its binary path and model, or errAgentNoReadOnly.
-func (m *agentManager) readOnlyArgv() (name string, args []string, err error) {
+// with its binary path and model, or errAgentNoReadOnly. With a schema, the
+// harness's StructuredArgs are added when it has them; structured reports
+// whether they were.
+func (m *agentManager) readOnlyArgv(schema string) (name string, args []string, structured bool, err error) {
 	m.mu.Lock()
 	name, model, hasArgs := m.selected, m.models[m.selected], m.args != nil
 	var bin string
@@ -595,23 +638,27 @@ func (m *agentManager) readOnlyArgv() (name string, args []string, err error) {
 	}
 	m.mu.Unlock()
 	if !hasArgs {
-		return "", nil, errAgentNone
+		return "", nil, false, errAgentNone
 	}
 	for _, p := range agentPresets {
 		if p.Name != name {
 			continue
 		}
 		if len(p.ReadOnlyArgs) == 0 {
-			return name, nil, errAgentNoReadOnly
+			return name, nil, false, errAgentNoReadOnly
 		}
 		if model == "" {
 			model = p.DefaultModel
 		}
 		args = presetArgv(p, p.ReadOnlyArgs, model)
+		if extra := structuredArgs(p, bin, schema); extra != nil {
+			args = insertBeforePrompt(args, extra...)
+			structured = true
+		}
 		args[0] = bin
-		return name, args, nil
+		return name, args, structured, nil
 	}
-	return name, nil, errAgentNoReadOnly
+	return name, nil, false, errAgentNoReadOnly
 }
 
 func agentPresetNames() []string {
@@ -1090,6 +1137,7 @@ type reviewJobOpts struct {
 	OutBytes int           // stdout/stderr tail kept for parsing
 	Timeout  time.Duration // hard limit on the run
 	TmpDir   string        // outside the worktree; the harness may read it
+	Schema   string        // JSON Schema the result must match, for harnesses with StructuredArgs
 }
 
 // StartReview dispatches a one-shot prompt with the selected harness's
@@ -1099,7 +1147,7 @@ type reviewJobOpts struct {
 // working tree anyway, run() marks the job Tainted and leaves the files as
 // they are for the user to inspect.
 func (m *agentManager) StartReview(label, prompt string, opts reviewJobOpts) (*agentJob, error) {
-	name, args, err := m.readOnlyArgv()
+	name, args, structured, err := m.readOnlyArgv(opts.Schema)
 	if err != nil {
 		uiStatus("err", "agent", "review dispatch refused: "+err.Error(), 0, os.Stdout)
 		return nil, err
@@ -1116,19 +1164,20 @@ func (m *agentManager) StartReview(label, prompt string, opts reviewJobOpts) (*a
 	m.seq++
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	job := &agentJob{
-		ID:       m.seq,
-		Harness:  name,
-		Path:     label,
-		Running:  true,
-		Changed:  []string{},
-		Tracked:  gitAvailable(m.root),
-		ReadOnly: true,
-		out:      &tailBuffer{max: outBytes},
-		stderr:   &tailBuffer{max: agentLogBytes},
-		start:    time.Now(),
-		cancel:   cancel,
-		timeout:  timeout,
-		tmpdir:   opts.TmpDir,
+		ID:         m.seq,
+		Harness:    name,
+		Path:       label,
+		Running:    true,
+		Changed:    []string{},
+		Tracked:    gitAvailable(m.root),
+		ReadOnly:   true,
+		Structured: structured,
+		out:        &tailBuffer{max: outBytes},
+		stderr:     &tailBuffer{max: agentLogBytes},
+		start:      time.Now(),
+		cancel:     cancel,
+		timeout:    timeout,
+		tmpdir:     opts.TmpDir,
 	}
 	if m.jobs == nil {
 		m.jobs = map[int64]*agentJob{}

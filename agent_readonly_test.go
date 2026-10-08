@@ -63,23 +63,23 @@ func TestExpandArgv(t *testing.T) {
 
 func TestReadOnlyArgvRefusals(t *testing.T) {
 	m := &agentManager{models: map[string]string{}}
-	if _, _, err := m.readOnlyArgv(); !errors.Is(err, errAgentNone) {
+	if _, _, _, err := m.readOnlyArgv(""); !errors.Is(err, errAgentNone) {
 		t.Fatalf("no harness: err = %v, want errAgentNone", err)
 	}
 
 	m.selected, m.args = "aider", []string{"/opt/bin/aider", "--yes-always", "{prompt}"}
-	if _, _, err := m.readOnlyArgv(); !errors.Is(err, errAgentNoReadOnly) {
+	if _, _, _, err := m.readOnlyArgv(""); !errors.Is(err, errAgentNoReadOnly) {
 		t.Fatalf("aider: err = %v, want errAgentNoReadOnly", err)
 	}
 
 	m.selected, m.args = "my-script.sh", []string{"/opt/bin/my-script.sh", "{prompt}"}
-	if _, _, err := m.readOnlyArgv(); !errors.Is(err, errAgentNoReadOnly) {
+	if _, _, _, err := m.readOnlyArgv(""); !errors.Is(err, errAgentNoReadOnly) {
 		t.Fatalf("custom template: err = %v, want errAgentNoReadOnly", err)
 	}
 
 	m.selected, m.args = "claude", []string{"/opt/bin/claude", "--permission-mode", "acceptEdits", "-p", "{prompt}"}
 	m.models["claude"] = "opus"
-	name, args, err := m.readOnlyArgv()
+	name, args, structured, err := m.readOnlyArgv("")
 	if err != nil || name != "claude" {
 		t.Fatalf("claude: (%q, %v), want no error", name, err)
 	}
@@ -91,6 +91,33 @@ func TestReadOnlyArgvRefusals(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(args, " "), "--model opus") {
 		t.Errorf("read-only argv lost the selected model: %v", args)
+	}
+	if structured || strings.Contains(strings.Join(args, " "), "--json-schema") {
+		t.Errorf("without a schema there are no structured args: %v", args)
+	}
+
+	// With a schema, Claude returns its result as validated JSON, the flags
+	// placed before -p {prompt} so the prompt stays last.
+	_, args, structured, err = m.readOnlyArgv(`{"type":"object"}`)
+	if err != nil || !structured {
+		t.Fatalf("claude with a schema: structured=%v err=%v", structured, err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, `--output-format json --json-schema {"type":"object"} -p {prompt}`) {
+		t.Errorf("structured argv = %v", args)
+	}
+
+	// Through a .cmd wrapper (npm on Windows) cmd.exe would mangle the
+	// schema's quotes: no structured args, the text result is parsed instead.
+	m.args[0] = "C:/npm/claude.cmd"
+	if _, args, structured, _ = m.readOnlyArgv(`{"type":"object"}`); structured || strings.Contains(strings.Join(args, " "), "--json-schema") {
+		t.Errorf(".cmd harness got structured args: %v", args)
+	}
+
+	// A harness without StructuredArgs runs as before.
+	m.selected, m.args = "codex", []string{"/opt/bin/codex", "exec", "{prompt}"}
+	if _, args, structured, _ = m.readOnlyArgv(`{"type":"object"}`); structured || strings.Contains(strings.Join(args, " "), "--json-schema") {
+		t.Errorf("codex got structured args: %v", args)
 	}
 }
 

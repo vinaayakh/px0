@@ -195,4 +195,7 @@ func TestLaunchUsesSavedClone(t *testing.T) {
 		t.Errorf("launched in %v, want %s", dirs, a)
 	}
 	waitLaunch(t, s, target, func(m map[string]any) bool { return m != nil && m["state"] == "running" })
+	// Wait for the stand-in child to exit: it runs in the clone, and Windows
+	// will not remove a folder that is a running process's working directory.
+	waitLaunch(t, s, target, func(m map[string]any) bool { return m == nil })
 }

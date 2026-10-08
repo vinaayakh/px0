@@ -341,21 +341,37 @@ func parseReviewOutput(out string) (reviewOutput, error) {
 	return reviewOutput{}, errors.New("no review result found in the harness output")
 }
 
+// decodeReviewJSON reads the last top-level JSON object in s that is a review
+// result once its keys are normalised (reviewparse.go): the newest, like the
+// candidates parseReviewOutput tries, so an echoed output-format template
+// before the real result is passed over. A decoder reads one complete value
+// from each "{" and ignores what follows, so prose after the JSON, braces
+// and all, does not spoil it; the scan then resumes after that value, so an
+// object nested inside a result is never taken for one.
 func decodeReviewJSON(s string) (reviewOutput, bool) {
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	for start >= 0 && end > start {
-		var r reviewOutput
-		if err := json.Unmarshal([]byte(s[start:end+1]), &r); err == nil && (r.Suggestions != nil || r.Summary != "" || r.Verdict != "") {
-			return r, true
+	var last reviewOutput
+	found := false
+	for start := strings.Index(s, "{"); start >= 0; {
+		next := start + 1
+		var m map[string]any
+		dec := json.NewDecoder(strings.NewReader(s[start:]))
+		if err := dec.Decode(&m); err == nil {
+			normalizeReviewKeys(m)
+			if b, err := json.Marshal(m); err == nil {
+				var r reviewOutput
+				if err := json.Unmarshal(b, &r); err == nil && (r.Suggestions != nil || r.Summary != "" || r.Verdict != "") {
+					last, found = r, true
+					next = start + int(dec.InputOffset())
+				}
+			}
 		}
-		next := strings.Index(s[start+1:], "{")
-		if next < 0 {
+		i := strings.Index(s[next:], "{")
+		if i < 0 {
 			break
 		}
-		start += next + 1
+		start = next + i
 	}
-	return reviewOutput{}, false
+	return last, found
 }
 
 // severityRank orders suggestions by priority, most severe first. The
@@ -514,7 +530,7 @@ var errReviewRunning = errors.New("an AI review is already running")
 // directory outside the worktree, removed when the run finishes.
 func (s *Server) startReview(focus string) (*reviewRun, error) {
 	// Refuse an unsupported harness before any git or network work.
-	if _, _, err := s.agent.readOnlyArgv(); err != nil {
+	if _, _, _, err := s.agent.readOnlyArgv(""); err != nil {
 		return nil, err
 	}
 	p := s.pr
@@ -573,7 +589,7 @@ func (s *Server) startReview(focus string) (*reviewRun, error) {
 	p.mu.Unlock()
 
 	job, err := s.agent.StartReview(fmt.Sprintf("AI review #%d of PR #%d", runID, meta.Number), reviewPrompt(tmpdir),
-		reviewJobOpts{OutBytes: reviewOutBytes, Timeout: cfg.reviewTimeout(), TmpDir: tmpdir})
+		reviewJobOpts{OutBytes: reviewOutBytes, Timeout: cfg.reviewTimeout(), TmpDir: tmpdir, Schema: reviewSchema})
 	if err != nil {
 		os.RemoveAll(tmpdir)
 		return nil, err
@@ -621,7 +637,7 @@ func (s *Server) finishReview(run *reviewRun, pd *prDiff, j *agentJob) {
 	case j.Error != "":
 		status, errMsg, raw = "failed", j.Error, tailString(j.Stdout+"\n"+j.Stderr, 64<<10)
 	default:
-		out, parseErr = parseReviewOutput(j.Stdout)
+		out, parseErr = parseReviewJobOutput(j.Stdout, j.Structured)
 		if parseErr != nil {
 			status, errMsg, raw = "failed", parseErr.Error(), tailString(j.Stdout+"\n"+j.Stderr, 64<<10)
 		}

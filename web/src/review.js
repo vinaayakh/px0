@@ -378,7 +378,9 @@ function rvRenderList() {
     const any = rvItems.length;
     list.innerHTML = '<div class="hint">' + (rvRun?.status === 'running' ? 'Waiting for the review…'
       : any ? 'Nothing pending. Suggestions you added are in your drafts; switch to All to see everything.'
-        : 'Run an AI review to get suggested comments. Nothing is posted until you add a suggestion to your review and submit it, or post it on its own.') + '</div>';
+        // A finished run with nothing to say is a result, not a blank: say so.
+        : rvRun?.status === 'done' ? 'No findings. The review found nothing worth a comment; its summary above says what it checked.'
+          : 'Run an AI review to get suggested comments. Nothing is posted until you add a suggestion to your review and submit it, or post it on its own.') + '</div>';
     return;
   }
   if (!items.some(s => s.id === rvSelId)) rvSelId = items[0].id;
