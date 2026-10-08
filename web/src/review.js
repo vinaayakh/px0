@@ -1,17 +1,23 @@
 // web/src/review.js
-// AI draft review, active only in PR sessions (S.meta.pr). The AI Review pane
-// in the right inspector runs a review skill through the selected harness,
-// read-only (review.go), then lists what came back as suggestions. Each one
-// is accepted, edited or dismissed here; accepted and edited ones become
-// ordinary drafts (pr.js), and nothing is posted until the reviewer submits
-// the review. Pending suggestions get their own gutter marker, drawn through
-// pr.js's marker hook so both kinds share one pass over the diff rows.
+// AI draft review, active only in PR sessions (S.meta.pr). The AI Review tab
+// (pr://review, a pinned virtual tab) runs a review skill through the
+// selected harness, read-only (review.go), then lists what came back as
+// suggestions. Each one is added to the review, edited or dismissed here or
+// on its line in Files changed (prfiles.js, which reads them through
+// reviewSuggestions() and acts through triageSuggestions()); added ones
+// become ordinary drafts (pr.js), and nothing is posted until the reviewer
+// submits the review or posts one on its own. Pending suggestions also get a
+// gutter marker in the single-file diff, drawn through pr.js's marker hook.
 import { $, S, esc, api, apiPostJson, keyLabel } from './state.js';
-import { on } from './bus.js';
+import { on, emit } from './bus.js';
 import { showToast } from './ui.js';
 import { registerAgentPicker } from './agent.js';
-import { showRightInspector } from './inspector.js';
-import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview, revealPRLine } from './pr.js';
+import { registerVirtualTab } from './virtualtab.js';
+import { openFile } from './tabs.js';
+import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview } from './pr.js';
+
+const RV_PATH = 'pr://review';
+let rvPage = null;        // the page, moved into the tab's article while shown
 
 let rvRun = null;         // latest run: {id, status, summary, verdict, counts, tainted, ...}
 let rvItems = [];         // AI suggestions, every status
@@ -29,40 +35,56 @@ const RV_LOW_CONFIDENCE = 0.5;
 const RV_ANCHOR_LABEL = { anchored: '', reanchored: 're-anchored', file: 'file-level', summary: 'summary note' };
 
 export function initReview() {
-  if (!S.meta?.pr) return;
-  const tab = $('#tab-review');
-  if (tab) tab.hidden = false;
-  registerAgentPicker({ el: $('#rv-run'), harnessSelect: $('#rv-harness'), modelSelect: $('#rv-model') });
+  rvPage = $('#rv-page');
+  if (!S.meta?.pr) { rvPage?.remove(); return; }
+  if (rvPage) { rvPage.remove(); rvPage.hidden = false; }
+  registerVirtualTab(RV_PATH, { title: () => 'AI Review', pinned: true, render: rvRenderTab });
+  registerAgentPicker({ el: rvQ('#rv-run'), harnessSelect: rvQ('#rv-harness'), modelSelect: rvQ('#rv-model') });
   on('agent:meta', rvRenderRun);
-  $('#pr-ai-review')?.addEventListener('click', () => showRightInspector('review'));
-  $('#rv-start')?.addEventListener('click', () => rvStart());
-  $('#rv-cancel')?.addEventListener('click', rvCancel);
-  $('#rv-focus')?.addEventListener('keydown', e => {
+  $('#pr-ai-review')?.addEventListener('click', () => openFile(RV_PATH));
+  rvQ('#rv-start')?.addEventListener('click', () => rvStart());
+  rvQ('#rv-cancel')?.addEventListener('click', rvCancel);
+  rvQ('#rv-focus')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); rvStart(); }
   });
-  $('#rv-filters')?.addEventListener('click', e => {
+  rvQ('#rv-filters')?.addEventListener('click', e => {
     const b = e.target.closest('[data-rv-filter]');
     if (!b) return;
     rvFilter = b.dataset.rvFilter;
-    for (const x of $('#rv-filters').children) x.classList.toggle('on', x === b);
+    for (const x of rvQ('#rv-filters').children) x.classList.toggle('on', x === b);
     rvRenderList();
   });
-  $('#rv-dismiss-nits')?.addEventListener('click', () => {
+  rvQ('#rv-dismiss-nits')?.addEventListener('click', () => {
     const ids = rvItems.filter(s => s.status === 'pending' && s.ai?.severity === 'nit').map(s => s.id);
     if (ids.length) rvTriage(ids, 'dismiss');
   });
-  $('#rv-alert')?.addEventListener('click', e => {
+  rvQ('#rv-alert')?.addEventListener('click', e => {
     if (e.target.closest('[data-rv-retry]')) rvStart();
     if (e.target.closest('[data-rv-recheck]')) rvRecheck();
   });
   on('pr:refreshed', rvLoad); // a Pull moved the head: suggestions may be stale now
-  const list = $('#rv-list');
+  const list = rvQ('#rv-list');
   list?.addEventListener('click', rvOnClick);
   list?.addEventListener('keydown', rvOnKey);
   setPRMarkerHook(rvDrawMarkers);
-  on('review:shown', rvLoad);
   on('pr:submitted', rvLoad);
+  on('pr:drafts-changed', rvLoad); // discarded drafts: accepted suggestions are dismissed now
   rvLoad();
+}
+
+// The tab draws by moving the one page into its article, so its controls
+// keep their listeners and the list keeps its state between visits.
+function rvRenderTab(article) {
+  article.classList.add('rv-host');
+  if (rvPage) article.append(rvPage);
+  rvLoad();
+}
+
+/* For Files changed (prfiles.js): every suggestion, and the triage actions. */
+export function reviewSuggestions() { return rvItems; }
+
+export async function triageSuggestions(ids, action, body) {
+  return rvTriage(ids, action, body);
 }
 
 /* ---------- server state ---------- */
@@ -110,8 +132,8 @@ function rvAnnounce() {
 
 async function rvStart() {
   if (rvRun?.status === 'running') return;
-  const focus = $('#rv-focus')?.value.trim() || '';
-  const btn = $('#rv-start');
+  const focus = rvQ('#rv-focus')?.value.trim() || '';
+  const btn = rvQ('#rv-start');
   if (btn) btn.disabled = true;
   try {
     const j = await apiPostJson('/api/pr/review/run', { focus });
@@ -150,13 +172,18 @@ async function rvTriage(ids, action, body) {
     if (j.staleRefused) showToast('!', j.staleRefused + ' stale suggestion' + (j.staleRefused === 1 ? ' was' : 's were') + ' skipped: re-check them first');
   } catch (e) {
     showToast('!', e.message || 'Could not update the suggestion');
-    return;
+    return false;
   }
   rvEditId = 0;
   await refreshComments(); // accepted ones are drafts now: bar count, bottom panel, gutter
   rvRender();
   renderPRMarkers();
+  return true;
 }
+
+// Re-reads the suggestions after something else changed them (a post from
+// Files changed). Exported for prfiles.js.
+export function reloadSuggestions() { return rvLoad(); }
 
 /* ---------- rendering ---------- */
 
@@ -170,11 +197,12 @@ function rvRender() {
   rvRenderRun();
   rvRenderList();
   const pending = rvItems.filter(s => s.status === 'pending').length;
-  for (const el of [$('#rv-tab-count'), $('#pr-ai-count')]) {
-    if (!el) continue;
+  const el = $('#pr-ai-count');
+  if (el) {
     el.hidden = !pending;
     el.textContent = pending ? String(pending) : '';
   }
+  emit('review:changed');
 }
 
 function rvElapsed(r) {
@@ -188,7 +216,7 @@ function rvRenderRun() {
   const r = rvRun;
   const running = r?.status === 'running';
   const h = rvHarnessInfo();
-  const start = $('#rv-start');
+  const start = rvQ('#rv-start');
   if (start) {
     start.hidden = running;
     start.disabled = !h.readOnly;
@@ -196,21 +224,21 @@ function rvRenderRun() {
     start.title = h.readOnly ? 'Review this PR with ' + h.name + ', read-only'
       : 'AI review needs a harness px0 can run read-only (claude or codex)';
   }
-  const cancel = $('#rv-cancel');
+  const cancel = rvQ('#rv-cancel');
   if (cancel) cancel.hidden = !running;
-  $('#rv-run')?.classList.toggle('busy', running);
+  rvQ('#rv-run')?.classList.toggle('busy', running);
 
-  const status = $('#rv-status');
+  const status = rvQ('#rv-status');
   if (status) {
     if (!h.name) status.textContent = 'Choose a coding harness first.';
     else if (!h.readOnly && !running) status.textContent = h.name + ' has no read-only mode px0 can enforce; pick claude or codex.';
-    else if (running) status.textContent = 'Reviewing with ' + (r.harness || h.name) + 'â€¦ ' + rvElapsed(r);
+    else if (running) status.textContent = 'Reviewing with ' + (r.harness || h.name) + '… ' + rvElapsed(r);
     else if (r?.status === 'done') status.textContent = rvCountsText(r);
     else if (r?.status === 'cancelled') status.textContent = 'Cancelled.';
     else status.textContent = '';
   }
 
-  const alert = $('#rv-alert');
+  const alert = rvQ('#rv-alert');
   if (alert) {
     let html = '';
     if (rvStale) {
@@ -235,7 +263,7 @@ function rvRenderRun() {
     alert.hidden = !html;
   }
 
-  const sum = $('#rv-summary');
+  const sum = rvQ('#rv-summary');
   if (sum) {
     const show = r?.status === 'done' && (r.summary || r.suggestedApprove);
     sum.hidden = !show;
@@ -250,7 +278,7 @@ function rvRenderRun() {
         const b = $('#pr-review-body');
         if (b) b.value = '';
         prefillReview(r.summary, r.verdict);
-        showToast('âœ“', 'Summary copied into the review form');
+        showToast('✓', 'Summary copied into the review form');
       });
     }
   }
@@ -279,7 +307,7 @@ function rvVisible() {
 function rvLocLabel(s) {
   if (s.subjectType === 'summary') return 'not in this PR';
   if (s.subjectType === 'file') return 'whole file' + (s.ai?.reportedLine ? ' (L' + s.ai.reportedLine + ')' : '');
-  const range = s.startLine ? 'L' + s.startLine + 'â€“' + s.line : 'L' + s.line;
+  const range = s.startLine ? 'L' + s.startLine + '–' + s.line : 'L' + s.line;
   return range + (s.side === 'LEFT' ? ' (base)' : '');
 }
 
@@ -315,7 +343,7 @@ function rvItemHtml(s) {
     html += '<textarea class="rv-edit agent-input" rows="5" spellcheck="false">' + esc(s.body) + '</textarea>' +
       '<div class="rv-actions"><span class="agent-hint">' + esc(keyLabel('Mod+Enter')) + ' to save, Esc to cancel</span><span class="grow"></span>' +
       '<button class="opt" type="button" data-rv-act="cancel-edit">Cancel</button>' +
-      '<button class="opt on" type="button" data-rv-act="save">Save &amp; accept</button></div></div>';
+      '<button class="opt on" type="button" data-rv-act="save">Save &amp; add to review</button></div></div>';
     return html;
   }
   html += '<div class="rv-body">' + esc(s.body) + '</div>';
@@ -325,10 +353,10 @@ function rvItemHtml(s) {
   }
   html += '<div class="rv-actions">';
   if (s.status === 'pending') {
-    html += '<button class="opt rv-accept" type="button" data-rv-act="accept" title="Accept (A)">Accept</button>' +
-      '<button class="opt" type="button" data-rv-act="edit" title="Edit, then accept (E)">Edit</button>' +
+    html += '<button class="opt rv-accept" type="button" data-rv-act="accept" title="Add to your review as a draft comment (A)">Add to review</button>' +
+      '<button class="opt" type="button" data-rv-act="edit" title="Edit, then add to your review (E)">Edit</button>' +
       '<button class="opt" type="button" data-rv-act="dismiss" title="Dismiss (D)">Dismiss</button>';
-  } else {
+  } else if (s.status !== 'posted') {
     html += '<button class="opt" type="button" data-rv-act="restore" title="Back to pending">Undo</button>';
     if (s.status !== 'dismissed') html += '<button class="opt" type="button" data-rv-act="edit" title="Edit">Edit</button>';
   }
@@ -337,14 +365,14 @@ function rvItemHtml(s) {
 }
 
 function rvRenderList() {
-  const list = $('#rv-list');
+  const list = rvQ('#rv-list');
   if (!list) return;
   const items = rvVisible();
   if (!items.length) {
     const any = rvItems.length;
-    list.innerHTML = '<div class="hint">' + (rvRun?.status === 'running' ? 'Waiting for the reviewâ€¦'
-      : any ? 'Nothing pending. Accepted suggestions are in your drafts; switch to All to see everything.'
-        : 'Run an AI review to get suggested comments. Nothing is posted until you accept a suggestion and submit the review.') + '</div>';
+    list.innerHTML = '<div class="hint">' + (rvRun?.status === 'running' ? 'Waiting for the review…'
+      : any ? 'Nothing pending. Suggestions you added are in your drafts; switch to All to see everything.'
+        : 'Run an AI review to get suggested comments. Nothing is posted until you add a suggestion to your review and submit it, or post it on its own.') + '</div>';
     return;
   }
   if (!items.some(s => s.id === rvSelId)) rvSelId = items[0].id;
@@ -354,8 +382,8 @@ function rvRenderList() {
     if (s.path !== path) {
       path = s.path;
       const pendingHere = items.filter(x => x.path === path && x.status === 'pending').length;
-      html += '<div class="rv-file"><span class="rv-file-path" title="' + esc(path) + '">' + esc(path) + '</span><span class="grow"></span>' +
-        (pendingHere > 1 ? '<button class="opt" type="button" data-rv-accept-file="' + esc(path) + '" title="Accept every pending suggestion in this file">Accept all</button>' : '') +
+      html += '<div class="rv-file"><span class="rv-file-path" data-rv-file="' + esc(path) + '" title="Show ' + esc(path) + ' in Files changed">' + esc(path) + '</span><span class="grow"></span>' +
+        (pendingHere > 1 ? '<button class="opt" type="button" data-rv-accept-file="' + esc(path) + '" title="Add every pending suggestion in this file to your review">Add all</button>' : '') +
         '</div>';
     }
     html += rvItemHtml(s);
@@ -371,14 +399,16 @@ function rvItemById(id) { return rvItems.find(s => s.id === id); }
 
 function rvSelect(id, { scroll = true } = {}) {
   rvSelId = id;
-  const list = $('#rv-list');
+  const list = rvQ('#rv-list');
   for (const el of list.querySelectorAll('.rv-item')) el.classList.toggle('sel', +el.dataset.id === id);
   if (scroll) list.querySelector('.rv-item.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
+// Shows the suggestion on its line in Files changed, with its card open.
 function rvJump(s) {
   if (!s || s.subjectType === 'summary') return;
-  revealPRLine(s.path, s.side || 'RIGHT', s.line);
+  const target = { path: s.path, side: s.side || 'RIGHT', line: s.subjectType ? 0 : s.line, id: s.id };
+  openFile('pr://files').then(() => emit('files:reveal', target));
 }
 
 function rvAct(s, act) {
@@ -388,9 +418,9 @@ function rvAct(s, act) {
     case 'dismiss': rvTriage([s.id], 'dismiss'); break;
     case 'restore': rvTriage([s.id], 'restore'); break;
     case 'edit': rvEditId = s.id; rvRenderList(); break;
-    case 'cancel-edit': rvEditId = 0; rvRenderList(); $('#rv-list')?.focus(); break;
+    case 'cancel-edit': rvEditId = 0; rvRenderList(); rvQ('#rv-list')?.focus(); break;
     case 'save': {
-      const ta = $('#rv-list .rv-edit');
+      const ta = rvQ('#rv-list .rv-edit');
       const body = ta?.value.trim();
       if (body) rvTriage([s.id], 'edit', body);
       break;
@@ -403,6 +433,11 @@ function rvOnClick(e) {
   if (acceptFile) {
     const path = acceptFile.dataset.rvAcceptFile;
     rvTriage(rvItems.filter(s => s.path === path && s.status === 'pending').map(s => s.id), 'accept');
+    return;
+  }
+  const file = e.target.closest('[data-rv-file]');
+  if (file) {
+    openFile('pr://files').then(() => emit('files:reveal', { path: file.dataset.rvFile, line: 0 }));
     return;
   }
   const item = e.target.closest('.rv-item');
@@ -432,7 +467,7 @@ function rvOnKey(e) {
   else if (key === 'k' || e.key === 'ArrowUp') { if (i > 0) rvSelect(items[i - 1].id); }
   else if (key === 'a' && s?.status === 'pending') rvAct(s, 'accept');
   else if (key === 'd' && s?.status === 'pending') rvAct(s, 'dismiss');
-  else if (key === 'e' && s && s.status !== 'dismissed') rvAct(s, 'edit');
+  else if (key === 'e' && s && s.status !== 'dismissed' && s.status !== 'posted') rvAct(s, 'edit');
   else if (e.key === 'Enter' && s) {
     if (!rvExpanded.has(s.id)) { rvExpanded.add(s.id); rvRenderList(); } // opens a collapsed low-confidence item
     rvJump(s);
@@ -466,10 +501,16 @@ function rvDrawMarkers(path, rows) {
     badge.innerHTML = RV_MARK_ICON;
     badge.addEventListener('click', ev => {
       ev.stopPropagation();
-      showRightInspector('review');
-      if (rvFilter === 'pending' || rvItems.some(x => x.id === top.id)) rvSelect(top.id);
-      $('#rv-list')?.focus();
+      openFile(RV_PATH).then(() => {
+        rvSelect(top.id);
+        rvQ('#rv-list')?.focus();
+      });
     });
     el.querySelector('.diff-code')?.before(badge);
   }
+}
+
+// The page's own elements, found whether or not the tab is showing it.
+function rvQ(sel) {
+  return rvPage?.querySelector(sel) || null;
 }

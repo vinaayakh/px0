@@ -131,6 +131,15 @@ export function scrollDiffToLine(line) {
   }
 }
 
+/* The hunks as diff rows, for a view other than this overlay (prfiles.js's
+   Files changed tab), in the same markup so the same styles and data-l /
+   data-old-l anchors apply. */
+export function diffHunksFragment(hunks, mode, reviewable = true) {
+  const frag = document.createDocumentFragment();
+  appendHunks(frag, hunks || [], mode === 'unified' ? 'unified' : 'split', reviewable);
+  return frag;
+}
+
 function appendHunks(frag, hunks, mode, reviewable) {
   for (const hunk of hunks) {
     frag.append(hunkHeader(hunk));

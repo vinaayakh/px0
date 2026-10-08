@@ -1,7 +1,8 @@
 // web/src/inbox.js
 // The PR inbox: a sidebar view (the third button of the Explorer toggle)
-// listing open pull requests in three sections -- review requested from me,
-// mine, and this repository's -- from /api/inbox (inbox.go). Opening one
+// listing the open pull requests of one repository -- the workspace's, or one
+// picked from /api/inbox/repos -- from /api/inbox (inbox.go). Chips narrow the
+// list to those waiting on the user's review or the user's own. Opening one
 // starts a child px0 on it through /api/pr/launch and shows it in a browser
 // window named after the PR, so opening the same PR again brings that window
 // back instead of checking the PR out a second time.
@@ -10,21 +11,25 @@ import { showToast } from './ui.js';
 import { openSettings } from './settings.js';
 
 const IB_SECTIONS = [
+  { id: 'all', title: 'All' },
   { id: 'review', title: 'Review requested' },
   { id: 'mine', title: 'Mine' },
-  { id: 'repo', title: 'This repo' },
 ];
 const IB_POLL_MS = 5 * 60 * 1000;
+const IB_OTHER = '\u0000other'; // the picker's "Other repository…" entry
 
 let ibOpen = false;
 let ibTimer = 0;
 let ibLoadedAt = 0;
 let ibLoading = false;
-const ibData = {};                 // section -> response
-const ibCollapsed = new Set();     // collapsed section ids
+let ibData = {};                   // section -> response, for ibRepo
 const ibOpening = new Set();       // PR URLs being launched
 let ibFilter = '';                 // filter box text
-let ibSort = '';                   // '', 'updated', 'created' or 'repo'
+let ibSort = '';                   // '', 'updated' or 'created'
+let ibSection = 'all';             // chip shown
+let ibRepo = '';                   // owner/name shown; '' is the workspace's
+let ibRepos = null;                // picker choices, once loaded
+let ibDefaultRepo = '';            // the workspace's repository
 
 // The filter and sort are a per-viewer convenience: remembered in this
 // browser if it allows, fine to lose.
@@ -38,13 +43,24 @@ function ibRecall(key) {
 export function initInbox() {
   $('#btn-inbox')?.addEventListener('click', () => { if (!ibOpen) showInbox(); });
   for (const sel of ['#btn-files', '#btn-changed']) $(sel)?.addEventListener('click', hideInbox);
-  $('#inbox-refresh')?.addEventListener('click', () => ibLoad(true));
+  $('#inbox-refresh')?.addEventListener('click', () => { ibLoadRepos(true); ibLoad(true); });
   ibSort = ibRecall('sort');
+  if (ibSort === 'repo') ibSort = ''; // every row is the same repository now
+  ibRepo = ibRecall('repo');
+  if (IB_SECTIONS.some(s => s.id === ibRecall('section'))) ibSection = ibRecall('section');
   const filterEl = $('#inbox-filter'), sortEl = $('#inbox-sort');
   if (sortEl) {
     sortEl.value = ibSort;
     sortEl.addEventListener('change', () => { ibSort = sortEl.value; ibRemember('sort', ibSort); ibRender(); });
   }
+  $('#inbox-repo')?.addEventListener('change', e => ibPickRepo(e.target.value));
+  $('#inbox-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-ib-chip]');
+    if (!chip) return;
+    ibSection = chip.dataset.ibChip;
+    ibRemember('section', ibSection);
+    ibRender();
+  });
   filterEl?.addEventListener('input', () => { ibFilter = filterEl.value; ibRender(); });
   filterEl?.addEventListener('keydown', e => {
     if (e.key === 'Escape' && filterEl.value) { e.stopPropagation(); filterEl.value = ''; ibFilter = ''; ibRender(); }
@@ -53,13 +69,7 @@ export function initInbox() {
   const body = $('#inbox-body');
   body?.addEventListener('click', e => {
     if (e.target.closest('[data-ib-token]')) { openSettings('ui', 'GitHub', 'github.token'); return; }
-    const head = e.target.closest('[data-ib-section]');
-    if (head) {
-      const id = head.dataset.ibSection;
-      if (ibCollapsed.has(id)) ibCollapsed.delete(id); else ibCollapsed.add(id);
-      ibRender();
-      return;
-    }
+    if (e.target.closest('[data-ib-pick]')) { ibPickRepo(IB_OTHER); return; }
     const row = e.target.closest('.ib-row');
     if (row) openPullRequest(row.dataset.url);
   });
@@ -90,6 +100,7 @@ export function showInbox() {
   $('#btn-inbox')?.classList.add('active');
   for (const sel of ['#btn-files', '#btn-changed']) $(sel)?.classList.remove('active');
   ibRender();
+  if (!ibRepos) ibLoadRepos(false);
   ibLoad(false);
   ibSchedule();
 }
@@ -109,21 +120,84 @@ function ibSchedule() {
   ibTimer = setTimeout(() => { ibLoad(false); ibSchedule(); }, IB_POLL_MS);
 }
 
+// Loads every chip's list for the shown repository at once, so switching
+// chips is instant and each chip can show its count. A repository picked
+// while a load is running loads again once it lands.
 async function ibLoad(force) {
   if (ibLoading) return;
   ibLoading = true;
+  const repo = ibRepo;
   $('#inbox-refresh')?.classList.add('busy');
+  const data = {};
   await Promise.all(IB_SECTIONS.map(async s => {
+    const q = { section: s.id };
+    if (repo) q.repo = repo;
+    if (force) q.refresh = 1;
     try {
-      ibData[s.id] = await api('/api/inbox', force ? { section: s.id, refresh: 1 } : { section: s.id });
+      data[s.id] = await api('/api/inbox', q);
     } catch (e) {
-      ibData[s.id] = { error: e.message || 'Could not load' };
+      data[s.id] = { error: e.message || 'Could not load' };
     }
   }));
   ibLoading = false;
-  ibLoadedAt = Date.now();
   $('#inbox-refresh')?.classList.remove('busy');
+  if (repo !== ibRepo) { ibLoad(force); return; }
+  ibData = data;
+  ibLoadedAt = Date.now();
+  const d = data.all;
+  if (d?.defaultRepo !== undefined) ibDefaultRepo = d.defaultRepo;
+  ibRenderRepos();
   ibRender();
+}
+
+async function ibLoadRepos(force) {
+  try {
+    const r = await api('/api/inbox/repos', force ? { refresh: 1 } : {});
+    ibRepos = r.repos || [];
+    ibDefaultRepo = r.defaultRepo || '';
+  } catch {
+    ibRepos = ibRepos || []; // the picker still offers the shown one and Other
+  }
+  ibRenderRepos();
+}
+
+// The repository shown: the one picked, else the workspace's.
+function ibShownRepo() {
+  return ibRepo || ibDefaultRepo;
+}
+
+function ibRenderRepos() {
+  const sel = $('#inbox-repo');
+  if (!sel) return;
+  const shown = ibShownRepo();
+  const list = [...(ibRepos || [])];
+  if (shown && !list.some(r => r.toLowerCase() === shown.toLowerCase())) list.unshift(shown);
+  let html = shown ? '' : '<option value="" selected>Pick a repository…</option>';
+  html += list.map(r => '<option value="' + esc(r) + '"' + (r.toLowerCase() === shown.toLowerCase() ? ' selected' : '') + '>' +
+    esc(r) + (r === ibDefaultRepo ? ' (this workspace)' : '') + '</option>').join('');
+  html += '<option value="' + IB_OTHER + '">Other repository…</option>';
+  sel.innerHTML = html;
+  sel.title = shown ? 'Repository: ' + shown : 'Pick a repository';
+}
+
+function ibPickRepo(value) {
+  if (value === IB_OTHER) {
+    const typed = (window.prompt('Show pull requests of which GitHub repository? (owner/name or URL)', ibShownRepo()) || '').trim();
+    const m = /^(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(typed);
+    if (!m) {
+      if (typed) showToast('!', 'Expected owner/name, like octocat/hello-world');
+      ibRenderRepos(); // put the picker back on the shown repository
+      return;
+    }
+    value = m[1];
+  }
+  if (!value) { ibRenderRepos(); return; }
+  ibRepo = value === ibDefaultRepo ? '' : value;
+  ibRemember('repo', ibRepo);
+  ibData = {};
+  ibRenderRepos();
+  ibRender();
+  ibLoad(false);
 }
 
 /* ---------- rendering ---------- */
@@ -163,7 +237,7 @@ function ibRowHtml(pr, current) {
   return '<div class="ib-row' + (isCurrent ? ' current' : '') + (opening ? ' opening' : '') + '" tabindex="0" data-url="' + esc(pr.url) + '" title="' + esc(pr.title) + '">' +
     '<div class="ib-top"><span class="ib-ci ' + ciCls + '" title="' + ciTitle + '">' + ciIcon + '</span>' +
     '<span class="ib-title">' + esc(pr.title) + '</span></div>' +
-    '<div class="ib-meta"><span class="ib-repo">' + esc(pr.repo) + '#' + pr.number + '</span>' +
+    '<div class="ib-meta"><span class="ib-repo">#' + pr.number + '</span>' +
     '<span>' + esc(pr.author) + '</span>' +
     '<span title="Updated ' + esc(pr.updatedAt) + '">' + esc(ibAge(pr.updatedAt)) + '</span>' +
     (pr.draft ? '<span class="ib-chip">Draft</span>' : '') +
@@ -176,43 +250,44 @@ function ibRowHtml(pr, current) {
 function ibRender() {
   const body = $('#inbox-body');
   if (!body || !ibOpen) return;
-  const any = IB_SECTIONS.some(s => ibData[s.id]);
-  if (!any) { body.innerHTML = '<div class="hint">Loading pull requests…</div>'; return; }
-  if (IB_SECTIONS.some(s => ibData[s.id]?.needsToken)) {
+  const words = ibFilter.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = pr => {
+    const hay = (pr.title + ' ' + pr.author + ' #' + pr.number).toLowerCase();
+    return words.every(w => hay.includes(w));
+  };
+  const chips = $('#inbox-chips');
+  if (chips) {
+    chips.innerHTML = IB_SECTIONS.map(s => {
+      const d = ibData[s.id];
+      const n = d?.error ? '!' : d?.items && !d.needsToken && !d.needsRepo ? d.items.filter(matches).length : '';
+      return '<button class="opt' + (s.id === ibSection ? ' on' : '') + '" type="button" data-ib-chip="' + s.id + '">' +
+        esc(s.title) + (n !== '' ? ' <span class="ib-count">' + n + '</span>' : '') + '</button>';
+    }).join('');
+  }
+  const d = ibData[ibSection];
+  if (!d) { body.innerHTML = '<div class="hint">Loading pull requests…</div>'; return; }
+  if (d.needsRepo) {
+    body.innerHTML = '<div class="ib-token">This workspace has no GitHub remote. Pick a repository above to see its pull requests. ' +
+      '<button class="opt" type="button" data-ib-pick>Choose repository…</button></div>';
+    return;
+  }
+  if (d.needsToken) {
     body.innerHTML = '<div class="ib-token">The inbox needs a GitHub token. Add one in Settings, set <code>GITHUB_TOKEN</code> or <code>GH_TOKEN</code>, or run <code>gh auth login</code>. ' +
       '<button class="opt" type="button" data-ib-token>Open Settings</button></div>';
     return;
   }
-  let html = '';
-  const words = ibFilter.toLowerCase().split(/\s+/).filter(Boolean);
-  const matches = pr => {
-    const hay = (pr.title + ' ' + pr.author + ' ' + pr.repo + '#' + pr.number).toLowerCase();
-    return words.every(w => hay.includes(w));
-  };
   const sorters = {
     updated: (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''),
     created: (a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''),
-    repo: (a, b) => a.repo.localeCompare(b.repo) || a.number - b.number,
   };
-  for (const s of IB_SECTIONS) {
-    const d = ibData[s.id];
-    if (!d || d.hidden) continue;
-    let items = (d.items || []).filter(matches);
-    if (sorters[ibSort]) items = [...items].sort(sorters[ibSort]);
-    const collapsed = ibCollapsed.has(s.id);
-    const title = s.id === 'repo' && d.repo ? s.title + ' · ' + d.repo : s.title;
-    html += '<div class="ib-section' + (collapsed ? ' collapsed' : '') + '">' +
-      '<div class="ib-head" data-ib-section="' + s.id + '" role="button" tabindex="0"><span class="ib-chev">' + (collapsed ? '▸' : '▾') + '</span>' +
-      '<span class="ib-head-title">' + esc(title) + '</span><span class="ib-count">' + (d.error ? '!' : items.length) + '</span></div>';
-    if (!collapsed) {
-      if (d.error) html += '<div class="ib-error">' + esc(d.error) + '</div>';
-      else if (!items.length) html += '<div class="ib-empty">' + (words.length && d.items?.length ? 'No match.' : 'Nothing here.') + '</div>';
-      else {
-        html += items.map(pr => ibRowHtml(pr, d.current)).join('');
-        if (!words.length && d.total > items.length) html += '<div class="ib-empty">Showing ' + items.length + ' of ' + d.total + '.</div>';
-      }
-    }
-    html += '</div>';
+  let items = (d.items || []).filter(matches);
+  if (sorters[ibSort]) items = [...items].sort(sorters[ibSort]);
+  let html;
+  if (d.error) html = '<div class="ib-error">' + esc(d.error) + '</div>';
+  else if (!items.length) html = '<div class="ib-empty">' + (words.length && d.items?.length ? 'No match.' : 'No open pull requests here.') + '</div>';
+  else {
+    html = items.map(pr => ibRowHtml(pr, d.current)).join('');
+    if (!words.length && d.total > items.length) html += '<div class="ib-empty">Showing ' + items.length + ' of ' + d.total + '.</div>';
   }
   body.innerHTML = html;
   const stamp = $('#inbox-updated');

@@ -474,10 +474,11 @@ func (s *Server) handlePRComments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			Path string `json:"path"`
-			Line int    `json:"line"`
-			Side string `json:"side"`
-			Body string `json:"body"`
+			Path      string `json:"path"`
+			Line      int    `json:"line"`
+			StartLine int    `json:"startLine"` // first line of a range, same side
+			Side      string `json:"side"`
+			Body      string `json:"body"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil ||
 			body.Path == "" || body.Line <= 0 || strings.TrimSpace(body.Body) == "" {
@@ -492,6 +493,9 @@ func (s *Server) handlePRComments(w http.ResponseWriter, r *http.Request) {
 		p.nextID++
 		c := prComment{ID: p.nextID, Path: body.Path, Line: body.Line, Side: side, Body: strings.TrimSpace(body.Body),
 			Origin: prOriginHuman, Status: prStatusAccepted}
+		if body.StartLine > 0 && body.StartLine < body.Line {
+			c.StartLine = body.StartLine
+		}
 		p.comments = append(p.comments, c)
 		if s.session != nil {
 			s.persistDrafts(p)
@@ -511,11 +515,27 @@ func (s *Server) handlePRCommentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	all := r.URL.Query().Get("all") != ""
 	p := s.pr
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if all {
+		// Every draft goes: the reviewer's own are dropped, accepted AI
+		// suggestions are dismissed (so a re-run does not offer them again,
+		// and AI Review can still restore them). Pending ones are not drafts.
+		kept := p.comments[:0]
+		for _, c := range p.comments {
+			if !c.submittable() {
+				kept = append(kept, c)
+			} else if c.Origin == prOriginAI {
+				c.Status = prStatusDismissed
+				kept = append(kept, c)
+			}
+		}
+		p.comments = kept
+	}
 	for i, c := range p.comments {
-		if c.ID == id {
+		if !all && c.ID == id {
 			p.comments = append(p.comments[:i], p.comments[i+1:]...)
 			break
 		}

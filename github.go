@@ -349,6 +349,7 @@ const (
 	prStatusAccepted  = "accepted"
 	prStatusEdited    = "edited"
 	prStatusDismissed = "dismissed"
+	prStatusPosted    = "posted" // an AI suggestion posted on its own (prfiles.go)
 )
 
 // submittable reports whether c goes out with the next review: a human draft,

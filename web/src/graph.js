@@ -33,6 +33,7 @@ let grNotice = '', grHint = '', grError = '';
 let grIndex = new Map();  // sha -> row index
 let grBranches = null;    // /api/graph/branches
 let grCat = 'all';        // branch list filter
+let grHiddenSrc = grLoadHiddenSrc(); // branch sources ('local' or a remote name) hidden from the list and the ref pills
 let grFocus = null;       // {label, shas:Set, fork, merges:Set, segs:Set, key}
 let grScrollTop = 0;
 let grDrawQueued = false;
@@ -157,6 +158,55 @@ async function grLoadBranches(refresh) {
     grBranchError = e.message || 'Could not list branches';
   }
   grDrawBranches();
+  grQueueDraw(); // ref pills follow the source filter, which needs the remotes
+}
+
+/* ---------- branch sources ---------- */
+
+/* Where a branch lives: 'local' for this clone, else the remote's name
+   (origin, upstream, ...). The list can hide any of them, and each has its
+   own colour so origin/main and upstream/main never read as the same thing. */
+const GR_SRC_TITLE = {
+  local: 'A branch in this clone',
+  origin: 'Remote-tracking branch from origin (usually your own copy of the repository)',
+  upstream: 'Remote-tracking branch from upstream (usually the repository you forked from)',
+};
+
+function grLoadHiddenSrc() {
+  try { return new Set(JSON.parse(localStorage.getItem('px0.graph.hiddenSources') || '[]')); } catch { return new Set(); }
+}
+
+function grSaveHiddenSrc() {
+  try { localStorage.setItem('px0.graph.hiddenSources', JSON.stringify([...grHiddenSrc])); } catch {}
+}
+
+function grSrcOf(b) {
+  return b.kind === 'local' ? 'local' : (b.remote || b.name.split('/')[0]);
+}
+
+/* The source of a ref pill in the graph: local, a remote's name, or '' for a tag. */
+function grRefSrc(ref) {
+  if (ref.k === 'local') return 'local';
+  if (ref.k !== 'remote') return '';
+  let best = '';
+  for (const b of grBranches?.branches || []) {
+    if (b.remote && b.remote.length > best.length && ref.n.startsWith(b.remote + '/')) best = b.remote;
+  }
+  return best || ref.n.split('/')[0];
+}
+
+function grSrcClass(src) {
+  return 'gr-src-' + (['local', 'origin', 'upstream'].includes(src) ? src : 'other');
+}
+
+function grSrcTitle(src) {
+  return GR_SRC_TITLE[src] || 'Remote-tracking branch from ' + src;
+}
+
+function grRefHtml(ref, focusTitle) {
+  const src = grRefSrc(ref);
+  return '<span class="gr-ref gr-ref-' + ref.k + (src ? ' ' + grSrcClass(src) : '') + (ref.h ? ' gr-ref-head' : '') +
+    '" data-gr-ref="' + esc(ref.n) + '" title="' + (focusTitle ? 'Focus ' : '') + esc(ref.n) + (src ? ' · ' + esc(grSrcTitle(src)) : '') + '">' + esc(ref.n) + '</span>';
 }
 
 /* ---------- layout of the tab ---------- */
@@ -173,6 +223,7 @@ async function grRender(article) {
       '<aside class="gr-side">' +
         '<div class="gr-side-head"><span class="gr-side-title">Branches</span><span class="gr-default" title="Everything is compared against this branch (setting: graph.defaultBranch)"></span>' +
         '<span class="grow"></span><button class="mini" type="button" data-gr-refresh title="Refresh branches and graph">⟳</button></div>' +
+        '<div class="gr-sources"></div>' +
         '<div class="gr-filters"></div>' +
         '<div class="gr-branches"><div class="hint">Loading branches…</div></div>' +
       '</aside>' +
@@ -239,6 +290,15 @@ function grWire(root) {
     if (file && !e.target.closest('.gr-diff')) { grToggleFileDiff(file); return; }
     if (e.target.closest('.gr-detail') && !e.target.closest('[data-gr-ref]')) return;
     if (e.target.closest('[data-gr-clear]')) { grSetFocus(null); return; }
+    const src = e.target.closest('[data-gr-src]');
+    if (src) {
+      const k = src.dataset.grSrc;
+      if (grHiddenSrc.has(k)) grHiddenSrc.delete(k); else grHiddenSrc.add(k);
+      grSaveHiddenSrc();
+      grDrawBranches();
+      grQueueDraw();
+      return;
+    }
     const chip = e.target.closest('[data-gr-cat]');
     if (chip) { grCat = chip.dataset.grCat; grDrawBranches(); return; }
     const br = e.target.closest('[data-gr-branch]');
@@ -303,7 +363,7 @@ function grDraw() {
     const r = grRows[i];
     const inFocus = !f || f.shas.has(r.h) || f.fork === r.h || f.merges.has(r.h);
     const role = !f ? '' : f.fork === r.h ? 'fork point' : f.merges.has(r.h) ? 'merged here' : '';
-    const refs = (r.r || []).map(ref => '<span class="gr-ref gr-ref-' + ref.k + (ref.h ? ' gr-ref-head' : '') + '" data-gr-ref="' + esc(ref.n) + '" title="Focus ' + esc(ref.n) + '">' + esc(ref.n) + '</span>').join('');
+    const refs = (r.r || []).filter(ref => !grHiddenSrc.has(grRefSrc(ref))).map(ref => grRefHtml(ref, true)).join('');
     const cls = (inFocus ? '' : ' dim') + (r.h === grHead ? ' head' : '') + (r.h === grSel ? ' sel' : '') +
       (grMatchSet.has(i) ? ' match' : '') + (grMatches[grMatchAt] === i ? ' match-cur' : '');
     html += '<div class="gr-row' + cls + '" data-gr-row="' + i + '" style="top:' + i * GR_ROW + 'px">' +
@@ -347,23 +407,36 @@ function grDrawBranches() {
   if (grBranchError) { list.innerHTML = '<div class="gr-note gr-note-err">' + esc(grBranchError) + '</div>'; return; }
   if (!grBranches) return;
   root.querySelector('.gr-default').textContent = grBranches.default ? 'vs ' + grBranches.default : 'no default branch';
-  const all = grBranches.branches || [];
+  const every = grBranches.branches || [];
+  const srcCounts = {};
+  for (const b of every) srcCounts[grSrcOf(b)] = (srcCounts[grSrcOf(b)] || 0) + 1;
+  const rank = s => s === 'local' ? 0 : s === 'origin' ? 1 : s === 'upstream' ? 2 : 3;
+  const srcs = Object.keys(srcCounts).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  root.querySelector('.gr-sources').innerHTML = srcs.map(s =>
+    '<button class="opt gr-src-chip' + (grHiddenSrc.has(s) ? '' : ' on') + '" type="button" data-gr-src="' + esc(s) + '" title="' +
+      esc(grSrcTitle(s)) + ' (click to ' + (grHiddenSrc.has(s) ? 'show' : 'hide') + ')">' +
+      '<span class="gr-src-dot ' + grSrcClass(s) + '"></span>' + esc(s) + ' <span class="gr-chip-n">' + srcCounts[s] + '</span></button>').join('');
+  const all = every.filter(b => !grHiddenSrc.has(grSrcOf(b)));
   const counts = {};
   for (const b of all) counts[b.category] = (counts[b.category] || 0) + 1;
-  chips.innerHTML = ['all', 'active', 'stale', 'gone', 'squash_merged', 'merged', 'orphan'].filter(c => c === 'all' || counts[c])
+  chips.innerHTML = ['all', 'active', 'stale', 'gone', 'squash_merged', 'merged', 'orphan'].filter(c => c === 'all' || counts[c] || c === grCat)
     .map(c => '<button class="opt' + (grCat === c ? ' on' : '') + '" type="button" data-gr-cat="' + c + '" title="' + esc(GR_CAT_TITLE[c] || 'Every branch') + '">' +
-      esc(c === 'all' ? 'all' : GR_CAT_LABEL[c]) + ' <span class="gr-chip-n">' + (c === 'all' ? all.length : counts[c]) + '</span></button>').join('');
+      esc(c === 'all' ? 'all' : GR_CAT_LABEL[c]) + ' <span class="gr-chip-n">' + (c === 'all' ? all.length : counts[c] || 0) + '</span></button>').join('');
   const shown = all.filter(b => grCat === 'all' || b.category === grCat);
   const focusRef = grFocus?.key?.startsWith('ref:') ? grFocus.key.slice(4) : '';
-  list.innerHTML = shown.length ? shown.map(b =>
-    '<div class="gr-branch' + (b.name === focusRef ? ' on' : '') + '" data-gr-branch="' + esc(b.name) + '" title="Focus ' + esc(b.name) + '">' +
+  list.innerHTML = shown.length ? shown.map(b => {
+    const src = grSrcOf(b);
+    const short = b.kind === 'remote' && b.name.startsWith(src + '/') ? b.name.slice(src.length + 1) : b.name;
+    return '<div class="gr-branch ' + grSrcClass(src) + (b.name === focusRef ? ' on' : '') + '" data-gr-branch="' + esc(b.name) + '" title="Focus ' + esc(b.name) + '">' +
       '<div class="gr-branch-top"><span class="gr-cat gr-cat-' + b.category + '" title="' + esc(GR_CAT_TITLE[b.category] || '') + '">' + esc(GR_CAT_LABEL[b.category] || b.category) + '</span>' +
-      '<span class="gr-bname">' + esc(b.name) + '</span>' + (b.current ? '<span class="gr-current" title="Checked out">●</span>' : '') + '</div>' +
+      '<span class="gr-src ' + grSrcClass(src) + '" title="' + esc(grSrcTitle(src)) + '">' + esc(src) + '</span>' +
+      '<span class="gr-bname">' + esc(short) + '</span>' + (b.current ? '<span class="gr-current" title="Checked out">●</span>' : '') + '</div>' +
       '<div class="gr-bmeta"><span>' + esc(b.author) + '</span><span>' + grRelTime(b.date) + '</span>' +
       (b.category !== 'default' && (b.ahead || b.behind) ? '<span class="gr-ab" title="' + b.ahead + ' commits ahead of, ' + b.behind + ' behind the default branch">↑' + b.ahead + ' ↓' + b.behind + '</span>' : '') +
       (b.prUrl ? '<a href="' + esc(b.prUrl) + '" target="_blank" rel="noopener noreferrer">PR</a>' : '') +
       grCleanupHtml(b) +
-      '</div></div>').join('') : '<div class="hint">No branches in this category.</div>';
+      '</div></div>';
+  }).join('') : '<div class="hint">' + (every.length && !all.length ? 'Every branch source is hidden.' : 'No branches in this category.') + '</div>';
 }
 
 /* The command that deletes a branch worth cleaning up, for the reviewer to
@@ -409,7 +482,7 @@ async function grOpenCommit(sha, { scroll }) {
   if (grSel !== sha) return;
   const [subject, ...rest] = d.message.split('\n');
   const body = rest.join('\n').trim();
-  const refs = (d.refs || []).map(ref => '<span class="gr-ref gr-ref-' + ref.k + (ref.h ? ' gr-ref-head' : '') + '" data-gr-ref="' + esc(ref.n) + '">' + esc(ref.n) + '</span>').join('');
+  const refs = (d.refs || []).map(ref => grRefHtml(ref, false)).join('');
   const parents = d.parents.map((p, i) => '<a href="#" data-gr-commit="' + esc(p) + '"><code>' + esc(p.slice(0, 7)) + '</code></a>' + (d.parents.length > 1 ? (i === 0 ? ' (first)' : '') : '')).join(', ');
   const files = d.files.map(f => {
     const stat = f.added < 0 ? 'binary' : '<span class="gr-add">+' + f.added + '</span> <span class="gr-del">−' + f.deleted + '</span>';

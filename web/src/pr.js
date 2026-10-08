@@ -73,7 +73,7 @@ function fmtTime(iso) {
 // Comments already posted on GitHub -- top-level conversation and inline diff
 // comments -- fetched live (never cached) so another reviewer's activity
 // shows up on the next open of the panel or diff.
-async function refreshExistingComments() {
+export async function refreshExistingComments() {
   try {
     const j = await api('/api/pr/existing-comments');
     issueComments = j.issueComments || [];
@@ -114,7 +114,7 @@ function renderBar() {
   if (mb) mb.hidden = !meta.merged;
   $('#pr-title').textContent = meta.title;
   $('#pr-title').title = meta.title;
-  $('#pr-refs').textContent = meta.base + ' â† ' + meta.head;
+  $('#pr-refs').textContent = meta.base + ' ← ' + meta.head;
   $('#pr-draft-count').textContent = comments.length
     ? (comments.length + (comments.length === 1 ? ' draft comment' : ' draft comments'))
     : '';
@@ -130,6 +130,8 @@ function renderBar() {
     const hasApplicable = comments.some(c => c.path && c.line && c.body?.trim());
     batchBtn.hidden = !hasApplicable;
   }
+  const discardBtn = $('#pr-discard-drafts');
+  if (discardBtn) discardBtn.hidden = !comments.length;
   const reqBtn = $('#pr-submit-request-changes');
   const appBtn = $('#pr-submit-approve');
   if (reqBtn) reqBtn.hidden = !meta.writeAccess;
@@ -150,10 +152,31 @@ export function nudgeGitHubToken() {
 
 function wireBarButtons() {
   $('#pr-batch-apply')?.addEventListener('click', batchApplyComments);
+  $('#pr-discard-drafts')?.addEventListener('click', discardAllDrafts);
   $('#pr-submit-comment')?.addEventListener('click', () => submitReview('COMMENT'));
   $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
   $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
   $('#pr-readonly-note')?.addEventListener('click', nudgeGitHubToken);
+}
+
+const BATCH_LABEL = 'Fix locally with AI';
+
+// Drops every draft at once (pr.go): the reviewer's own are deleted and
+// accepted AI suggestions go back to dismissed, where AI Review can restore
+// them.
+async function discardAllDrafts() {
+  if (!comments.length) return;
+  const n = comments.length;
+  if (!window.confirm('Discard ' + n + (n === 1 ? ' draft comment' : ' draft comments') + '? Your own are deleted; accepted AI suggestions are dismissed (AI Review can restore them).')) return;
+  try {
+    await apiPostJson('/api/pr/comments/delete?all=1', {});
+    closeAllComposers();
+    await refreshComments();
+    emit('pr:drafts-changed');
+    showToast('✓', 'Discarded ' + n + (n === 1 ? ' draft' : ' drafts'));
+  } catch (e) {
+    showToast('!', e.message || 'Could not discard drafts');
+  }
 }
 
 // Only the label swaps text; the icon markup (SVG + .footer-btn-label span,
@@ -163,7 +186,7 @@ function setBatchBtnLabel(btn, text) {
   if (label) label.textContent = text; else if (btn) btn.textContent = text;
 }
 
-// The instruction a draft becomes for Batch Apply. An AI suggestion that
+// The instruction a draft becomes for Fix locally with AI. An AI suggestion that
 // carries replacement code hands it over, so the harness applies the change
 // the reviewer accepted rather than re-deriving it from the comment.
 function batchInstruction(c) {
@@ -179,13 +202,13 @@ async function batchApplyComments() {
   // Summary notes are about files outside the PR: nothing there to edit.
   const applicable = comments.filter(c => c.path && c.line && c.body?.trim() && c.subjectType !== 'summary');
   if (!applicable.length) {
-    showToast('!', 'No draft comments with line locations to apply');
+    showToast('!', 'No draft comments on lines to fix');
     return;
   }
   const btn = $('#pr-batch-apply');
   if (btn) {
     btn.disabled = true;
-    setBatchBtnLabel(btn, 'Applying...');
+    setBatchBtnLabel(btn, 'Fixing...');
   }
   const edits = applicable.map(c => ({
     path: c.path,
@@ -195,14 +218,14 @@ async function batchApplyComments() {
   }));
   try {
     const job = await apiPostJson('/api/agent/batch', { edits });
-    showToast('AI', `Batch applying ${edits.length} comments with ${job.harness || 'agent'}...`);
+    showToast('AI', `${job.harness || 'The agent'} is editing this checkout for ${edits.length} draft comments...`);
     pollPRBatch(job.id, applicable.length);
   } catch (e) {
     if (btn) {
       btn.disabled = false;
-      setBatchBtnLabel(btn, 'Batch Apply');
+      setBatchBtnLabel(btn, BATCH_LABEL);
     }
-    showToast('!', e.message || 'Could not dispatch batch edit');
+    showToast('!', e.message || 'Could not start the agent');
   }
 }
 
@@ -213,28 +236,33 @@ async function pollPRBatch(id, count) {
       const j = await api('/api/agent/job?id=' + id);
       if (j.running) {
         const sec = Math.round((j.ms || 0) / 1000);
-        if (btn) setBatchBtnLabel(btn, `Applying... (${sec}s)`);
+        if (btn) setBatchBtnLabel(btn, `Fixing... (${sec}s)`);
         setTimeout(poll, 600);
         return;
       }
       if (btn) {
         btn.disabled = false;
-        setBatchBtnLabel(btn, 'Batch Apply');
+        setBatchBtnLabel(btn, BATCH_LABEL);
       }
       if (j.error) {
         showToast('!', `Agent error: ${j.error}`);
         if (j.changed?.length) await reloadWorkspace(null);
         return;
       }
-      showToast('âœ“', `Batch applied ${count} comments!`);
+      // The agent only edits files here: the drafts stay drafts, and nothing
+      // reaches the PR until the reviewer pushes.
+      const n = j.changed?.length || 0;
+      showToast('✓', n
+        ? `Edited ${n} ${n === 1 ? 'file' : 'files'} for ${count} draft comments. Nothing is on GitHub yet: check Git changes, then Push.`
+        : 'The agent finished without changing any file.', 8000);
       await reloadWorkspace(null);
       await refreshComments();
     } catch (e) {
       if (btn) {
         btn.disabled = false;
-        setBatchBtnLabel(btn, 'Batch Apply');
+        setBatchBtnLabel(btn, BATCH_LABEL);
       }
-      showToast('!', e.message || 'Batch failed');
+      showToast('!', e.message || 'The fix failed');
     }
   };
   setTimeout(poll, 400);
@@ -264,7 +292,7 @@ async function submitReview(event) {
     renderBar();
     renderCommentsPanel();
     renderMarkersForActiveDoc();
-    showToast('âœ“', event === 'APPROVE' ? 'Review approved'
+    showToast('✓', event === 'APPROVE' ? 'Review approved'
       : event === 'REQUEST_CHANGES' ? 'Changes requested'
       : 'Review comment submitted');
   } catch (e) {
@@ -397,7 +425,7 @@ export function openCommentComposer(info) {
   box.innerHTML =
     '<div class="agent-head"><span class="sel-chip">Review Comment</span>' +
     '<span class="agent-ref" role="button" tabindex="0" title="Jump to this line">' + esc(ref) + '</span>' +
-    '<span class="grow"></span><button class="agent-close" title="Close (Esc)">âœ•</button></div>' +
+    '<span class="grow"></span><button class="agent-close" title="Close (Esc)">✕</button></div>' +
     '<div class="agent-compose">' +
     '<textarea class="agent-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Leave a comment on this line... (' + esc(modEnter) + ' to add)"></textarea>' +
     '<div class="agent-err" hidden></div>' +
@@ -605,7 +633,13 @@ function wireCommentsPanel() {
   });
 }
 
-async function deleteDraft(id) {
+// The session's drafts and the comments already posted inline, for the Files
+// changed tab (prfiles.js), which draws both on their lines.
+export function prDrafts() { return comments; }
+export function prPostedReviewComments() { return reviewComments; }
+export function prSessionMeta() { return meta; }
+
+export async function deleteDraft(id) {
   try {
     await apiPostJson('/api/pr/comments/delete?id=' + id, {});
     comments = comments.filter(c => c.id !== id);
@@ -670,6 +704,7 @@ function renderCommentsPanel() {
   }
   listEl.innerHTML = html;
   if (countEl) countEl.textContent = comments.length ? String(comments.length) : '';
+  emit('pr:comments-changed'); // drafts or posted comments moved: Files changed redraws its threads
 }
 /* ---------- launching another PR from a running session ---------- */
 

@@ -80,9 +80,9 @@ A range (`startLine` < `line`) moves with its end line and survives only when it
 
 ## 7. Frontend
 
-`review.js` owns the AI Review pane (`#pane-right-review`) and the **AI Review** button in the PR bar, which opens it. It registers its harness and model selects with `registerAgentPicker`, re-checks read-only support on `agent:meta`, polls while a run is in flight, and groups suggestions by file, sorted by severity. Suggestions below 0.5 confidence are collapsed. Keys on the list: `J`/`K` (or arrows) move, `A` accepts, `E` edits (`Mod+Enter` saves and accepts, `Esc` cancels), `D` dismisses, `Enter` opens the line in the diff through `revealPRLine`.
+`review.js` owns the AI Review tab (`pr://review`, a pinned virtual tab that shows `#rv-page`) and the **AI Review** button in the PR bar, which opens it. It registers its harness and model selects with `registerAgentPicker`, re-checks read-only support on `agent:meta`, polls while a run is in flight, and groups suggestions by file, sorted by severity. Suggestions below 0.5 confidence are collapsed. Keys on the list: `J`/`K` (or arrows) move, `A` adds to the review (accept), `E` edits (`Mod+Enter` saves and adds, `Esc` cancels), `D` dismisses, `Enter` (or a click) opens Files changed at the suggestion through `files:reveal`. The same actions live on each suggestion's card in Files changed (`prfiles.js`), which reads the list through `reviewSuggestions()`, acts through `triageSuggestions()`, and redraws on `review:changed`.
 
-`pr.js` shows only submittable drafts, so pending suggestions never appear in the draft count, the comments panel or Batch Apply. After each triage `review.js` calls `refreshComments()` so accepted suggestions show up as drafts right away. Gutter markers for pending suggestions are drawn by `review.js` through `setPRMarkerHook`, in the same pass over diff rows as `pr.js`'s own markers; the star icon is coloured by severity. When a run finishes, `prefillReview` puts the summary into an empty review body and highlights the suggested verdict button (Comment or Request Changes), never Approve.
+`pr.js` shows only submittable drafts, so pending suggestions never appear in the draft count, the comments panel or Fix locally with AI. After each triage `review.js` calls `refreshComments()` so accepted suggestions show up as drafts right away. Gutter markers for pending suggestions are drawn by `review.js` through `setPRMarkerHook`, in the same pass over diff rows as `pr.js`'s own markers; the star icon is coloured by severity. When a run finishes, `prefillReview` puts the summary into an empty review body and highlights the suggested verdict button (Comment or Request Changes), never Approve.
 
 ## 8. Endpoints
 
@@ -104,7 +104,9 @@ Every POST goes through `localPost`.
 
 **Submit time.** Before sending a review, `handlePRSubmit` asks GitHub for the PR's current head. If it differs from the checkout's, the review is still posted against the commit that was reviewed (GitHub accepts that and shows the comments as on an older commit), the response says `headMoved`, the UI says so, and pending suggestions become stale until a Pull and a re-check.
 
-**Batch Apply.** Accepted and edited suggestions are ordinary drafts, so **⚡ Batch Apply** sends them to the harness like any other. A suggestion with replacement code carries that code in its instruction ("Suggested replacement for lines 10-12: …"), and a range suggestion applies to its whole range. Summary notes (about files outside the PR) are left out: there is nothing in the checkout to edit.
+**Posting one now.** `POST /api/pr/comments/post {id, body}` posts a pending, accepted or edited suggestion straight away as a one-comment COMMENT review (with `body` replacing its text) and marks it `posted`: no longer a draft, not offered again by a re-run, and refused by triage. A stale pending suggestion is refused with 409 like an accept.
+
+**Fix locally with AI.** Accepted and edited suggestions are ordinary drafts, so **⚡ Fix locally with AI** sends them to the harness like any other. A suggestion with replacement code carries that code in its instruction ("Suggested replacement for lines 10-12: …"), and a range suggestion applies to its whole range. Summary notes (about files outside the PR) are left out: there is nothing in the checkout to edit.
 
 ## 10. Not Yet Done
 

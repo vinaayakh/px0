@@ -30,9 +30,10 @@ const (
 )
 
 type graphBranch struct {
-	Name     string `json:"name"` // "feature" or "origin/feature"
-	Ref      string `json:"ref"`  // full ref name
-	Kind     string `json:"kind"` // local or remote
+	Name     string `json:"name"`             // "feature" or "origin/feature"
+	Ref      string `json:"ref"`              // full ref name
+	Kind     string `json:"kind"`             // local or remote
+	Remote   string `json:"remote,omitempty"` // "origin", "upstream", ... for remote branches
 	SHA      string `json:"sha"`
 	Category string `json:"category"`
 	Ahead    int    `json:"ahead"`  // commits on the branch not in the default branch
@@ -70,6 +71,24 @@ func parallelEach[T any](items []T, fn func(T)) {
 	wg.Wait()
 }
 
+// remoteOf names the remote a remote-tracking branch such as "origin/main"
+// belongs to: the longest configured remote that prefixes it (remote names
+// may contain slashes), else everything before the first slash.
+func remoteOf(name string, remotes []string) string {
+	best := ""
+	for _, r := range remotes {
+		if len(r) > len(best) && strings.HasPrefix(name, r+"/") {
+			best = r
+		}
+	}
+	if best == "" {
+		if i := strings.IndexByte(name, '/'); i > 0 {
+			best = name[:i]
+		}
+	}
+	return best
+}
+
 // graphBranches lists local and remote branches with their category.
 // squashLookup, when set, asks the forge which of the given branch names had
 // a PR merged, and returns name -> PR URL.
@@ -96,6 +115,8 @@ func graphBranches(root, def string, staleDays int, now time.Time, squashLookup 
 		}
 	}
 
+	remotes, _ := gitLines(root, "remote")
+
 	var out []graphBranch
 	for _, line := range lines {
 		f := strings.Split(line, "\x00")
@@ -108,6 +129,7 @@ func graphBranches(root, def string, staleDays int, now time.Time, squashLookup 
 			b.Kind, b.Name = "local", strings.TrimPrefix(b.Ref, "refs/heads/")
 		} else {
 			b.Kind, b.Name = "remote", strings.TrimPrefix(b.Ref, "refs/remotes/")
+			b.Remote = remoteOf(b.Name, remotes)
 		}
 		if withAB && len(f) >= 8 {
 			if ab := strings.Fields(f[7]); len(ab) == 2 {

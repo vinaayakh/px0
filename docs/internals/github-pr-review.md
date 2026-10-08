@@ -142,17 +142,24 @@ func gitMergeBase(root, a, b string) string
 
 ---
 
-## 6. Draft Comments, Submission & Batch Apply
+## 6. Draft Comments, Submission & Fixing Locally
 
 ### In-Memory Drafts
 - `GET /api/pr/comments`: Returns current drafts.
-- `POST /api/pr/comments`: Appends a line comment (`Path`, `Line`, `Side`, `Body`). Allowed unauthenticated so reviewers can draft feedback locally.
-- `POST /api/pr/comments/delete`: Deletes a draft by ID.
+- `POST /api/pr/comments`: Appends a line comment (`Path`, `Line`, `Side`, `Body`, optional `StartLine` for a range). Allowed unauthenticated so reviewers can draft feedback locally.
+- `POST /api/pr/comments/delete`: Deletes a draft by ID; `?all=1` discards every draft (human drafts are deleted, accepted or edited AI suggestions go back to `dismissed`).
+- `POST /api/pr/comments/edit?id=`: Replaces the text of one of the reviewer's own drafts (AI suggestions are edited through review triage).
+- `POST /api/pr/comments/post`: Posts one comment now, as a single-comment `COMMENT` review: a new one (`path`, `line`, `startLine`, `side`, `body`) or an existing draft or suggestion by `id` (`body` optionally replacing its text). A posted draft leaves the list; a posted AI suggestion stays as `posted`. Requires a token.
 
 Each draft carries an `origin` (`human`, or `ai` for a suggestion from AI review) and a `status` (`pending`, `accepted`, `edited`, `dismissed`). A human draft is created `accepted`; a suggestion starts `pending` and only the reviewer's accept or edit makes it submittable. An empty status (a draft restored from an older session file) counts as accepted. `draftCount` in `/api/pr/meta` counts submittable drafts only. Optional fields: `startLine` for a multi-line range, `subjectType: "file"` for a comment on the whole file, `runId` and `fingerprint` for AI suggestions.
 
-### Batch Apply with Coding Agents (`âš¡ Batch Apply`)
-Users can delegate all drafted PR comments directly to an AI coding agent (Claude Code, Gemini CLI, Cursor Agent, Antigravity, etc.). The agent harness receives the comments as targeted editing instructions and modifies the worktree files directly.
+### Fix Locally with Coding Agents (`⚡ Fix locally with AI`)
+Users can delegate all drafted PR comments directly to an AI coding agent (Claude Code, Gemini CLI, Cursor Agent, Antigravity, etc.). The agent harness receives the comments as targeted editing instructions and modifies the worktree files directly. Nothing is posted and the drafts stay; the edits reach the PR only when the reviewer pushes.
+
+### Files Changed Tab
+`GET /api/pr/files` (`prfiles.go`) returns the PR's own diff, `diffBase..prHeadSHA` (what a review is posted against), split per file by `splitDiffFiles` and described by `buildPRFile`: path, old path of a rename, status, binary flag, additions, deletions and highlighted hunks. A file over 256 KB or 3000 rows comes with `tooLarge` and no hunks; `?path=` (new or old path, `safePath`-checked, passed with `--literal-pathspecs`) returns that one file whole. `POST /api/markdown/render {text}` renders comment text for the composer's Preview and the cards (sanitized in the page like forge HTML).
+
+`web/src/prfiles.js` draws the `pr://files` tab with `diff.js`'s `diffHunksFragment()` and lays posted comments, drafts, pending AI suggestions and open comment boxes under their lines (or in the file's notes when the line is not in the diff), redrawing them on `pr:comments-changed` and `review:changed`.
 
 ### Formal Review Submission
 - `POST /api/pr/submit`: Requires auth token.
@@ -198,7 +205,7 @@ Unlike a formal review submission, Push is not gated on `p.writeAccess` â€”
 - **PR Header Bar (`web/src/pr.js`)**:
   - Renders PR number, title, author, branch refs, and draft count badge.
   - Toggles `#pr-merged-badge` (purple pill) when `meta.merged` is true.
-  - Houses **âš¡ Batch Apply** and **Submit Review** controls.
+  - Houses **Discard drafts**, **⚡ Fix locally with AI**, the **AI Review** button and the **Submit Review** controls.
 - **Child PR Launching**:
   - Command Palette **Git: Open Pull Requestâ€¦** posts to `/api/pr/launch`.
   - Spawns `px0 -y <url>` in a new detached process on an ephemeral port.

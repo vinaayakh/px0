@@ -28,7 +28,7 @@ let cvPendingReveal = null; // {path, side, line} to scroll to on the next draw
 
 export function initConversation() {
   if (!S.meta?.pr) return;
-  registerVirtualTab('pr', { title: () => 'Conversation', pinned: true, render: cvRender });
+  registerVirtualTab(CV_PATH, { title: () => 'Conversation', pinned: true, render: cvRender });
   on('pr:submitted', () => cvRefresh(true));
   on('pr:refreshed', () => cvRefresh(true));
   // A gutter badge on a posted thread (pr.js) lands here.

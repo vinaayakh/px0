@@ -1,18 +1,22 @@
 # PR Inbox
 
-The inbox lists open pull requests in the sidebar and opens one in a PR review session with a click, replacing pasted URLs as the normal way in. It is the third button of the Explorer toggle (Files, Git changes, Pull Requests) and works in any session that can find a GitHub token.
+The inbox lists the open pull requests of one repository in the sidebar and opens one in a PR review session with a click, replacing pasted URLs as the normal way in. It is the third button of the Explorer toggle (Files, Git changes, Pull Requests) and works in any session that can find a GitHub token.
 
-Source: [`inbox.go`](../../inbox.go) (search, sections, cache, launching), [`web/src/inbox.js`](../../web/src/inbox.js) (panel, opening a PR in its window).
+Source: [`inbox.go`](../../inbox.go) (search, sections, repository list, cache, launching), [`web/src/inbox.js`](../../web/src/inbox.js) (panel, opening a PR in its window).
 
-## 1. Sections
+## 1. One Repository, Three Sections
 
-| Section | Search qualifiers | Shown when |
-| --- | --- | --- |
-| Review requested | `is:open is:pr archived:false review-requested:@me sort:created-asc` (oldest first, so nothing waits forever at the bottom) | a token is found |
-| Mine | `is:open is:pr archived:false author:@me sort:updated-desc` | a token is found |
-| This repo | `is:open is:pr repo:<owner/name> sort:updated-desc` | the workspace has a GitHub repository |
+Every section is scoped to one repository, `?repo=owner/name`; the panel shows one section at a time as a chip and loads all three at once so each chip shows its count.
 
-"This repo" is the PR's own repository in a PR session, else the `origin` remote parsed by `githubRepoFromRemote` (HTTPS with or without credentials, `git@github.com:`, `ssh://`, `git://`; anything not on github.com gives none and the section is hidden).
+| Section | Search qualifiers |
+| --- | --- |
+| All (`all`) | `is:open is:pr repo:<owner/name> sort:updated-desc` |
+| Review requested (`review`) | `is:open is:pr repo:<owner/name> review-requested:@me sort:created-asc` (oldest first, so nothing waits forever at the bottom) |
+| Mine (`mine`) | `is:open is:pr repo:<owner/name> author:@me sort:updated-desc` |
+
+Without `repo` the workspace's repository is used: the PR's own in a PR session, else the `origin` remote parsed by `githubRepoFromRemote` (HTTPS with or without credentials, `git@github.com:`, `ssh://`, `git://`; anything not on github.com gives none). With neither, the answer is `needsRepo` and the panel asks for a repository. A `repo` that is not a plain `owner/name` (`inboxRepoRe`) is refused with 400, so it cannot add search qualifiers of its own.
+
+The picker's choices come from `GET /api/inbox/repos`: the workspace's repository first, then the viewer's repositories (owner, collaborator or organization member; archived ones left out) most recently pushed first, from one GraphQL `viewer.repositories` query cached for 10 minutes. "Other repository…" takes any `owner/name` or GitHub URL. The choice and the chip are remembered in the browser's local storage.
 
 ## 2. One Search per Section
 
@@ -44,16 +48,17 @@ The launched child opens without its own browser tab (`-no-open`) because the pa
 
 | Method and path | Returns |
 | --- | --- |
-| `GET /api/inbox?section=review\|mine\|repo[&refresh=1]` | `{section, items: []PRSummary, total, fetchedAt, repo, current, hidden, needsToken}` |
+| `GET /api/inbox?section=all\|review\|mine[&repo=owner/name][&refresh=1]` | `{section, items: []PRSummary, total, fetchedAt, repo, defaultRepo, current, needsRepo, needsToken}` |
+| `GET /api/inbox/repos[?refresh=1]` | `{repos: [owner/name], defaultRepo, needsToken}` |
 | `POST /api/pr/launch {target}` | `{ok, already, launch: {key, target, url, state, error}}` or `{ok, self}` |
 | `GET /api/pr/launch?target=` | `{key, target, url, state, error}`; 404 when not launched from here |
 
 ## 7. Tests
 
-[`inbox_test.go`](../../inbox_test.go): search parsing (CI and review mapping, ghost authors, skipped nodes), paging stops at 2 pages, remote URL parsing (including look-alike hosts), no-token, hidden repo section, the cache and `refresh=1`, the repo section in a PR session, and the launch registry, which runs the test binary as a stand-in child: the URL is read through ANSI codes, another spelling of the same PR reuses the running child, an exited child is forgotten, a failed one reports its output and is retried, and the session's own PR is refused. [`github_live_test.go`](../../github_live_test.go) checks the inbox and Conversation queries against GitHub itself when run with `PX0_LIVE_GITHUB=1` (read-only).
+[`inbox_test.go`](../../inbox_test.go): search parsing (CI and review mapping, ghost authors, skipped nodes), paging stops at 2 pages, remote URL parsing (including look-alike hosts), no-token, no repository (`needsRepo`), refused `repo` values, every section scoped to its repository, the cache per repository and `refresh=1`, the default repository in a PR session, the repository list (workspace first, archived left out, cached), and the launch registry, which runs the test binary as a stand-in child: the URL is read through ANSI codes, another spelling of the same PR reuses the running child, an exited child is forgotten, a failed one reports its output and is retried, and the session's own PR is refused. [`github_live_test.go`](../../github_live_test.go) checks the inbox and Conversation queries against GitHub itself when run with `PX0_LIVE_GITHUB=1` (read-only).
 
 ## 8. Filter, Sort, and `px0 inbox`
 
-The filter box above the sections narrows every section at once: each word must appear in the title, author or `repo#number`. Esc clears it, ↓ moves into the list. The sort menu keeps each section's own order (review requests oldest first, the others most recently updated first) or sorts all of them by last update, by creation, or by repository. The sort choice is remembered in the browser's local storage, a per-viewer convenience that may be lost without harm.
+The filter box narrows the list (and the chip counts): each word must appear in the title, author or `#number`. Esc clears it, ↓ moves into the list. The sort menu keeps the section's own order (review requests oldest first, the others most recently updated first) or sorts by last update or by creation. The sort choice is remembered in the browser's local storage, a per-viewer convenience that may be lost without harm.
 
 The palette command **Git: Pull Requests** opens the panel from anywhere. `px0 inbox` starts px0 with no workspace: it serves an empty temporary directory (`px0-inbox-*`, removed on exit) and opens the page with `?view=inbox`, which boots straight into the panel. PRs opened from there are checked out as fresh clones, since there is no local repository to add a worktree to. If a file or folder called `inbox` exists in the current directory, `px0 inbox` opens it as a workspace instead, as before.

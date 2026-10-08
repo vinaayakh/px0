@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -113,11 +115,13 @@ func setInboxToken(t *testing.T, tok string) {
 	inboxMu.Lock()
 	inboxTok, inboxTokFrom, inboxTokAt = tok, "test", time.Now().Add(time.Hour)
 	inboxCache = map[string]inboxEntry{}
+	inboxRepos, inboxReposAt = nil, time.Time{}
 	inboxMu.Unlock()
 	t.Cleanup(func() {
 		inboxMu.Lock()
 		inboxTok, inboxTokAt = "", time.Time{}
 		inboxCache = map[string]inboxEntry{}
+		inboxRepos, inboxReposAt = nil, time.Time{}
 		inboxMu.Unlock()
 	})
 }
@@ -135,44 +139,107 @@ func TestInboxWithoutToken(t *testing.T) {
 	var calls int32
 	defer fakeSearch(t, &calls, 1)()
 	s := inboxServer(t)
-	code, m := getJSON(t, s, "/api/inbox?section=review")
+	code, m := getJSON(t, s, "/api/inbox?section=review&repo=o/r")
 	if code != 200 || m["needsToken"] != true || len(m["items"].([]any)) != 0 || calls != 0 {
 		t.Fatalf("= %d %v after %d calls", code, m, calls)
 	}
 }
 
+// fakeSearchCapture answers every GraphQL call with inboxSearchPage and
+// keeps the last search query.
+func fakeSearchCapture(t *testing.T, calls *int32, last *atomic.Value) func() {
+	t.Helper()
+	orig := githubHTTPClient.Transport
+	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(calls, 1)
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		json.NewDecoder(req.Body).Decode(&body)
+		q, _ := body.Variables["q"].(string)
+		last.Store(q)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(inboxSearchPage)), Header: make(http.Header)}, nil
+	})
+	return func() { githubHTTPClient.Transport = orig }
+}
+
 func TestInboxSections(t *testing.T) {
 	setInboxToken(t, "tok")
 	var calls int32
-	defer fakeSearch(t, &calls, 1)()
+	var lastQuery atomic.Value
+	defer fakeSearchCapture(t, &calls, &lastQuery)()
 	s := inboxServer(t)
 
 	if code, _ := getJSON(t, s, "/api/inbox?section=everything"); code != http.StatusBadRequest {
 		t.Errorf("unknown section = %d, want 400", code)
 	}
-	// Not a git checkout: no origin, so the repo section is hidden.
-	if _, m := getJSON(t, s, "/api/inbox?section=repo"); m["hidden"] != true || calls != 0 {
-		t.Errorf("repo section without an origin = %v", m)
+	// Not a git checkout and no repository picked: nothing to search.
+	if _, m := getJSON(t, s, "/api/inbox?section=all"); m["needsRepo"] != true || calls != 0 {
+		t.Errorf("no repository = %v", m)
+	}
+	// Anything but owner/name could add search qualifiers of its own.
+	for _, bad := range []string{"o/r%20author:x", "o", "o/r/x", "o:r/x"} {
+		if code, _ := getJSON(t, s, "/api/inbox?section=all&repo="+bad); code != http.StatusBadRequest {
+			t.Errorf("repo %q = %d, want 400", bad, code)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("a refused repository must not search")
 	}
 
-	code, m := getJSON(t, s, "/api/inbox?section=review")
-	if code != 200 || len(m["items"].([]any)) != 4 || calls != 1 {
+	code, m := getJSON(t, s, "/api/inbox?section=review&repo=o/r")
+	if code != 200 || len(m["items"].([]any)) != 4 || calls != 1 || m["repo"] != "o/r" {
 		t.Fatalf("review = %d %v (%d calls)", code, m, calls)
 	}
-	getJSON(t, s, "/api/inbox?section=review")
+	if q, _ := lastQuery.Load().(string); !strings.Contains(q, "repo:o/r ") || !strings.Contains(q, "review-requested:@me") {
+		t.Errorf("review search = %q, want it scoped to o/r", q)
+	}
+	getJSON(t, s, "/api/inbox?section=review&repo=o/r")
 	if calls != 1 {
 		t.Errorf("a second load within %s must be served from the cache", inboxCacheTTL)
 	}
-	getJSON(t, s, "/api/inbox?section=review&refresh=1")
+	getJSON(t, s, "/api/inbox?section=review&repo=x/y")
 	if calls != 2 {
+		t.Errorf("another repository is another search")
+	}
+	getJSON(t, s, "/api/inbox?section=review&repo=o/r&refresh=1")
+	if calls != 3 {
 		t.Errorf("refresh=1 must search again")
 	}
 
-	// In a PR session the repo section is the PR's repository.
+	// In a PR session the default repository is the PR's.
 	s.pr = &prSession{target: PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 7, URL: "https://github.com/o/r/pull/7"}}
-	_, m = getJSON(t, s, "/api/inbox?section=repo")
-	if m["repo"] != "o/r" || m["current"] != "https://github.com/o/r/pull/7" {
-		t.Errorf("repo section in a PR session = %v", m)
+	_, m = getJSON(t, s, "/api/inbox?section=all")
+	if m["repo"] != "o/r" || m["defaultRepo"] != "o/r" || m["current"] != "https://github.com/o/r/pull/7" {
+		t.Errorf("all in a PR session = %v", m)
+	}
+}
+
+func TestInboxRepos(t *testing.T) {
+	setInboxToken(t, "tok")
+	var calls int32
+	orig := githubHTTPClient.Transport
+	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		resp := `{"data":{"viewer":{"repositories":{"nodes":[
+		  {"nameWithOwner":"x/y","isArchived":false},{"nameWithOwner":"o/r","isArchived":false},{"nameWithOwner":"old/gone","isArchived":true}]}}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(resp)), Header: make(http.Header)}, nil
+	})
+	defer func() { githubHTTPClient.Transport = orig }()
+	s := inboxServer(t)
+	s.pr = &prSession{target: PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 7, URL: "https://github.com/o/r/pull/7"}}
+
+	code, m := getJSON(t, s, "/api/inbox/repos")
+	if got := fmt.Sprint(m["repos"]); code != 200 || got != "[o/r x/y]" || m["defaultRepo"] != "o/r" {
+		t.Fatalf("repos = %d %v, want the workspace's first, no archived, no duplicate", code, m)
+	}
+	getJSON(t, s, "/api/inbox/repos")
+	if calls != 1 {
+		t.Errorf("a second load within %s must be served from the cache", inboxReposTTL)
+	}
+	getJSON(t, s, "/api/inbox/repos?refresh=1")
+	if calls != 2 {
+		t.Errorf("refresh=1 must ask GitHub again")
 	}
 }
 

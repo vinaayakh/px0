@@ -137,6 +137,12 @@ func TestGraphBranchCategories(t *testing.T) {
 	if a := got["active"]; a.Ahead != 1 || a.Behind != 6 || a.Kind != "local" || a.Author != "Tess" {
 		t.Errorf("active = %+v, want 1 ahead, 6 behind (k1, M, o1, o2, M2, f1)", a)
 	}
+	if o := got["origin/main"]; o.Kind != "remote" || o.Remote != "origin" {
+		t.Errorf("origin/main = %+v, want remote branch of origin", o)
+	}
+	if got["main"].Remote != "" {
+		t.Errorf("local main has remote %q", got["main"].Remote)
+	}
 	if !got["main"].Current {
 		t.Error("main is checked out")
 	}
@@ -154,6 +160,21 @@ func TestGraphBranchCategories(t *testing.T) {
 		}
 		if b.Name == "stale" && b.Category != catStale {
 			t.Errorf("stale must stay stale: %+v", b)
+		}
+	}
+}
+
+func TestRemoteOf(t *testing.T) {
+	remotes := []string{"origin", "upstream", "team/fork"}
+	for name, want := range map[string]string{
+		"origin/main":         "origin",
+		"upstream/feat/x":     "upstream",
+		"team/fork/main":      "team/fork",
+		"unknown/topic":       "unknown",
+		"originals/something": "originals",
+	} {
+		if got := remoteOf(name, remotes); got != want {
+			t.Errorf("remoteOf(%q) = %q, want %q", name, got, want)
 		}
 	}
 }

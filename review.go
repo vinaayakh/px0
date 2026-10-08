@@ -839,8 +839,8 @@ func (s *Server) handleReviewTriage(w http.ResponseWriter, r *http.Request) {
 	staleRefused := 0
 	for i := range p.comments {
 		c := &p.comments[i]
-		if !want[c.ID] || c.Origin != prOriginAI {
-			continue
+		if !want[c.ID] || c.Origin != prOriginAI || c.Status == prStatusPosted {
+			continue // a posted suggestion is on GitHub: nothing left to decide
 		}
 		if (status == prStatusAccepted || status == prStatusEdited) && p.isStale(*c) {
 			staleRefused++ // its line may have moved: re-check before accepting

@@ -16,9 +16,10 @@ import (
 	"time"
 )
 
-// inbox.go is the PR inbox (web/src/inbox.js): open pull requests waiting on
-// the user's review, the user's own, and those of the workspace's GitHub
-// repository, each listed with CI and review state from one GraphQL search.
+// inbox.go is the PR inbox (web/src/inbox.js): the open pull requests of one
+// GitHub repository -- the workspace's by default, or any the user picks --
+// each listed with CI and review state from one GraphQL search, optionally
+// narrowed to those waiting on the user's review or the user's own.
 // Opening one goes through /api/pr/launch, which starts a child px0 on the PR
 // and remembers it, so a second click brings back the same session instead
 // of checking the PR out again.
@@ -31,13 +32,17 @@ const (
 )
 
 // inboxSections maps a section to its search qualifiers ({repo} is the
-// workspace's owner/name). Review requests list oldest first, so nothing
-// waits forever at the bottom.
+// selected owner/name). Review requests list oldest first, so nothing waits
+// forever at the bottom.
 var inboxSections = map[string]string{
-	"review": "is:open is:pr archived:false review-requested:@me sort:created-asc",
-	"mine":   "is:open is:pr archived:false author:@me sort:updated-desc",
-	"repo":   "is:open is:pr repo:{repo} sort:updated-desc",
+	"all":    "is:open is:pr repo:{repo} sort:updated-desc",
+	"review": "is:open is:pr repo:{repo} review-requested:@me sort:created-asc",
+	"mine":   "is:open is:pr repo:{repo} author:@me sort:updated-desc",
 }
+
+// inboxRepoRe is an owner/name safe to drop into a search query: anything
+// else (a space, a colon) could smuggle in qualifiers of its own.
+var inboxRepoRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 const inboxSearchQuery = `query($q: String!, $cursor: String) {
   search(query: $q, type: ISSUE, first: 50, after: $cursor) {
@@ -205,26 +210,33 @@ func (s *Server) inboxToken() (token, source string) {
 	return inboxTok, inboxTokFrom
 }
 
-// handleInbox serves one section: GET ?section=review|mine|repo, &refresh=1
-// to skip the cache.
+// handleInbox serves one section of one repository: GET
+// ?section=all|review|mine&repo=owner/name, &refresh=1 to skip the cache.
+// Without repo it is the workspace's; with neither, needsRepo is set.
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	section := r.URL.Query().Get("section")
 	q, ok := inboxSections[section]
 	if !ok {
-		fail(w, http.StatusBadRequest, "section must be review, mine or repo")
+		fail(w, http.StatusBadRequest, "section must be all, review or mine")
 		return
 	}
-	resp := map[string]any{"section": section, "items": []PRSummary{}}
-	if section == "repo" {
-		repo := s.inboxRepo()
-		if repo == "" {
-			resp["hidden"] = true // no GitHub origin: the section is not shown
-			writeJSON(w, resp)
-			return
-		}
-		q = strings.ReplaceAll(q, "{repo}", repo)
-		resp["repo"] = repo
+	def := s.inboxRepo()
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	if repo == "" {
+		repo = def
 	}
+	resp := map[string]any{"section": section, "items": []PRSummary{}, "defaultRepo": def}
+	if repo == "" {
+		resp["needsRepo"] = true // no GitHub origin and nothing picked yet
+		writeJSON(w, resp)
+		return
+	}
+	if !inboxRepoRe.MatchString(repo) {
+		fail(w, http.StatusBadRequest, "repo must be owner/name")
+		return
+	}
+	q = strings.ReplaceAll(q, "{repo}", repo)
+	resp["repo"] = repo
 	if s.pr != nil {
 		resp["current"] = s.pr.target.URL
 	}
@@ -252,6 +264,85 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		inboxMu.Unlock()
 	}
 	resp["items"], resp["total"], resp["fetchedAt"] = e.items, e.total, e.at
+	writeJSON(w, resp)
+}
+
+// ---------------------------------------------------------------- repositories
+
+const inboxReposTTL = 10 * time.Minute
+
+// inboxReposQuery lists the repositories the user can see PRs in, most
+// recently pushed first: the choices for the inbox's repository picker.
+const inboxReposQuery = `query {
+  viewer {
+    repositories(first: 100, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: PUSHED_AT, direction: DESC}) {
+      nodes { nameWithOwner isArchived }
+    }
+  }
+}`
+
+type gqlViewerRepos struct {
+	Viewer struct {
+		Repositories struct {
+			Nodes []struct {
+				NameWithOwner string `json:"nameWithOwner"`
+				IsArchived    bool   `json:"isArchived"`
+			} `json:"nodes"`
+		} `json:"repositories"`
+	} `json:"viewer"`
+}
+
+var (
+	inboxRepos   []string
+	inboxReposAt time.Time
+)
+
+// handleInboxRepos serves the picker's choices: GET, &refresh=1 to skip the
+// cache. The workspace's repository is first whether or not GitHub lists it.
+func (s *Server) handleInboxRepos(w http.ResponseWriter, r *http.Request) {
+	def := s.inboxRepo()
+	resp := map[string]any{"repos": []string{}, "defaultRepo": def}
+	token, _ := s.inboxToken()
+	if token == "" {
+		if def != "" {
+			resp["repos"] = []string{def}
+		}
+		resp["needsToken"] = true
+		writeJSON(w, resp)
+		return
+	}
+	inboxMu.Lock()
+	repos, at := inboxRepos, inboxReposAt
+	inboxMu.Unlock()
+	if repos == nil || r.URL.Query().Get("refresh") != "" || time.Since(at) > inboxReposTTL {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		var d gqlViewerRepos
+		err := githubGraphQL(ctx, token, inboxReposQuery, nil, &d)
+		cancel()
+		if err != nil {
+			fail(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		repos = []string{}
+		for _, n := range d.Viewer.Repositories.Nodes {
+			if n.NameWithOwner != "" && !n.IsArchived {
+				repos = append(repos, n.NameWithOwner)
+			}
+		}
+		inboxMu.Lock()
+		inboxRepos, inboxReposAt = repos, time.Now()
+		inboxMu.Unlock()
+	}
+	out := make([]string, 0, len(repos)+1)
+	if def != "" {
+		out = append(out, def)
+	}
+	for _, rp := range repos {
+		if !strings.EqualFold(rp, def) {
+			out = append(out, rp)
+		}
+	}
+	resp["repos"] = out
 	writeJSON(w, resp)
 }
 

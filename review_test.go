@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -198,6 +199,24 @@ func reviewTestServer(t *testing.T) *Server {
 		},
 	}
 	return s
+}
+
+func TestDiscardAllDrafts(t *testing.T) {
+	s := reviewTestServer(t) // 1 is a human draft, 2 and 3 pending AI suggestions
+	s.pr.comments[1].Status = prStatusAccepted
+	if code, _ := agentPostJSON(t, s, "/api/pr/comments/delete?all=1", map[string]any{}); code != 200 {
+		t.Fatalf("discard all = %d", code)
+	}
+	got := map[int64]string{}
+	for _, c := range s.pr.comments {
+		got[c.ID] = c.Status
+	}
+	// The human draft is gone, the accepted suggestion dismissed (not
+	// deleted, so a re-run does not offer it again), the pending one kept.
+	want := map[int64]string{2: prStatusDismissed, 3: prStatusPending}
+	if fmt.Sprint(got) != fmt.Sprint(want) || countSubmittable(s.pr.comments) != 0 {
+		t.Fatalf("after discard all = %v, want %v", got, want)
+	}
 }
 
 func TestReviewTriage(t *testing.T) {

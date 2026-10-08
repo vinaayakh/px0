@@ -28,6 +28,7 @@ import { initGitPanel } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initReview } from './review.js';
 import { initConversation } from './conversation.js';
+import { initPRFiles } from './prfiles.js';
 import { initInbox, showInbox } from './inbox.js';
 import { initGraph } from './graph.js';
 import { initLineComment } from './linecomment.js';
@@ -95,7 +96,8 @@ initProblems();
   applyAgentMeta();
   initPR();
   initReview();
-  initConversation(); // before tabs are restored: it registers pr:// tabs
+  initConversation(); // before tabs are restored: these register the pr:// tabs
+  initPRFiles();
   initInbox();
   initGraph(); // before tabs are restored: it registers git:// tabs
   document.title = S.meta.name + ' - px0';
@@ -161,6 +163,9 @@ initProblems();
       // A PR session lands on its Conversation, pinned first; after a reload
       // the tab the reviewer was on stays active.
       await openFile('pr://conversation', { push: false, background: restored });
+      // Files changed and AI Review sit beside it, in GitHub's order.
+      await openFile('pr://files', { push: false, background: true });
+      await openFile('pr://review', { push: false, background: true });
     } else if (hasGitChanges) await selectChangedFileTab();
     // A link with a graph focus (#graph=ref:feature) opens on the graph.
     if (/^#graph=/.test(location.hash) && S.meta.git) await openFile('git://graph');
