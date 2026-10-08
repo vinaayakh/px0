@@ -13,8 +13,8 @@ import { on, emit } from './bus.js';
 import { showToast } from './ui.js';
 import { registerAgentPicker } from './agent.js';
 import { registerVirtualTab } from './virtualtab.js';
-import { openFile } from './tabs.js';
-import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview, prSessionMeta, nudgeGitHubToken } from './pr.js';
+import { openFile, drawTabs } from './tabs.js';
+import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview, prSessionMeta, nudgeGitHubToken, openSubmitReview } from './pr.js';
 
 const RV_PATH = 'pr://review';
 let rvPage = null;        // the page, moved into the tab's article while shown
@@ -41,10 +41,9 @@ export function initReview() {
   rvPage = $('#rv-page');
   if (!S.meta?.pr) { rvPage?.remove(); return; }
   if (rvPage) { rvPage.remove(); rvPage.hidden = false; }
-  registerVirtualTab(RV_PATH, { title: () => 'AI Review', pinned: true, render: rvRenderTab });
+  registerVirtualTab(RV_PATH, { title: () => 'AI Review', pinned: true, render: rvRenderTab, count: rvPendingCount });
   registerAgentPicker({ el: rvQ('#rv-run'), harnessSelect: rvQ('#rv-harness'), modelSelect: rvQ('#rv-model') });
   on('agent:meta', rvRenderRun);
-  $('#pr-ai-review')?.addEventListener('click', () => openFile(RV_PATH));
   rvQ('#rv-start')?.addEventListener('click', () => rvStart());
   rvQ('#rv-cancel')?.addEventListener('click', rvCancel);
   rvQ('#rv-focus')?.addEventListener('keydown', e => {
@@ -196,15 +195,14 @@ function rvHarnessInfo() {
   return { name, readOnly: !!h?.readOnly };
 }
 
+function rvPendingCount() {
+  return rvItems.filter(s => s.status === 'pending').length;
+}
+
 function rvRender() {
   rvRenderRun();
   rvRenderList();
-  const pending = rvItems.filter(s => s.status === 'pending').length;
-  const el = $('#pr-ai-count');
-  if (el) {
-    el.hidden = !pending;
-    el.textContent = pending ? String(pending) : '';
-  }
+  drawTabs(); // the AI Review tab's pending count
   emit('review:changed');
 }
 
@@ -278,10 +276,8 @@ function rvRenderRun() {
         '<span class="grow"></span>' +
         '<button class="opt" type="button" data-rv-use-summary>Use as review body</button></div>';
       sum.querySelector('[data-rv-use-summary]')?.addEventListener('click', () => {
-        const b = $('#pr-review-body');
-        if (b) b.value = '';
-        prefillReview(r.summary, r.verdict);
-        showToast('✓', 'Summary copied into the review form');
+        prefillReview(r.summary, r.verdict, true);
+        openSubmitReview();
       });
     }
   }

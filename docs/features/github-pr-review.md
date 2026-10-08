@@ -62,7 +62,9 @@ From inside a running px0 browser session, the Command Palette (`Cmd/Ctrl+K` →
 ## Reviewing & Real-Time Agent Collaboration
 
 ### The Conversation Tab
-A PR session opens on its **Conversation** tab, pinned first in the tab bar, as on GitHub:
+A PR session opens on its **Conversation** tab, pinned first in the tab bar, as on GitHub. The four PR tabs (Conversation, Files changed, AI Review and Submit review) are part of the session and cannot be closed; file tabs open after them. The one-row header above the tabs names the PR and its branches and holds **Submit review** (with the number of drafts) and **End review**.
+
+The Conversation tab shows:
 - **Header**: title and number, state (open, draft, merged, closed), author, base and head branches, labels, assignees and requested reviewers. For an open PR, a readiness row shows the review decision, whether checks pass, and whether the branch has conflicts.
 - **Checks**: a summary of the check runs on the head commit that opens into each check's result, duration and a link to its logs; it opens by itself when something failed.
 - **Description**, rendered as GitHub Flavored Markdown through the same sanitizer as Markdown files: images load from GitHub, and scripts and unsafe HTML are stripped.
@@ -102,15 +104,15 @@ Comments sit on their lines, as on GitHub:
 - **Comments already posted** show with their author; **Reply in Conversation** opens their thread there.
 - **Pending AI suggestions** show as cards with severity, category and confidence: **Dismiss**, **Edit**, **Comment now**, or **Add to review**. Their lines are marked in the gutter, and the arrows in the bar step from one suggestion to the next.
 
-**Finish your review** jumps to the review summary in the PR bar.
+**Finish your review** opens the Submit review tab with the summary focused.
 
 ### 5. Drafts, Discarding, and Fixing Locally
-Drafts are not on GitHub until you submit the review (or post one with **Comment now**). The **Drafts** panel at the bottom lists exactly what your next review will send, by line, and the PR bar counts them:
+Drafts are not on GitHub until you submit the review (or post one with **Comment now**). The **Drafts** panel at the bottom lists exactly what your next review will send, by line, and the Submit review tab lists and counts them (the count is also on the tab and on the header's **Submit review** button). From that tab:
 - **Discard drafts** removes every draft at once, after asking: your own are deleted, and AI suggestions you had added go back to dismissed, where the AI Review tab's **All** filter can restore them.
 - **⚡ Fix locally with AI** hands every draft to your coding harness as an instruction, and the harness edits the files of the PR checkout to address them. It posts nothing and leaves the drafts as they are: review the edits in the git panel, then **Push** to put them on the PR. An added AI suggestion that proposes code hands that code to the harness too.
 
 ### 6. AI Review: Suggestions You Curate
-**AI Review** in the PR bar opens the **AI Review** tab, pinned after Files changed. Pick a harness and model, optionally type a focus ("security only"), and press **Run AI Review**. The harness reviews the PR read-only in the checkout: it can open any file and read `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`, but its file-writing tools are turned off. Only harnesses px0 can run read-only are offered: Claude Code and Codex.
+The **AI Review** tab, pinned after Files changed, shows the number of pending suggestions on the tab. Pick a harness and model, optionally type a focus ("security only"), and press **Run AI Review**. The harness reviews the PR read-only in the checkout: it can open any file and read `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`, but its file-writing tools are turned off. Only harnesses px0 can run read-only are offered: Claude Code and Codex.
 
 What comes back are *suggestions*, not comments: one per finding, never two issues in one. Nothing is posted until you act:
 - The list is sorted by priority across all files: **Critical**, **High**, **Medium**, **Low**, each under its own heading, and within a severity the more confident first.
@@ -128,7 +130,7 @@ The review instructions are a markdown skill: `review.skillPath` in Settings, el
 If the PR moves after a review run (you Pull new commits, or GitHub reports new ones when you submit), the pending suggestions are marked **stale**: their lines may have moved, so they cannot be accepted until you press **Re-check**, which places them again against the current diff. Dismissing still works.
 
 ### 7. Submitting Formal Reviews
-The PR review bar above the editor tabs hosts the overall review summary and verdict actions:
+The **Submit review** tab, pinned last, holds everything that goes out together: the drafts, the review summary, and the verdict buttons. **Use as review body** in AI Review fills the summary and opens it.
 - **Comment**: Submit feedback without an approval status (available to all reviewers).
 - **Approve** / **Request Changes**: Available when your authenticated token has repository push access.
 - Submitting posts a single review payload containing all draft line comments and the review body. Pending and dismissed AI suggestions are never included.
@@ -182,14 +184,14 @@ px0 abstracts forge interactions through a clean, minimal `GitProvider` interfac
 | `Cmd/Ctrl+D` | Active tab | Toggle side-by-side / unified diff against merge-base |
 | Command Palette (`Cmd/Ctrl+K`) | Command Palette → **Git: Open Pull Request…** | Launch a new PR review tab |
 | **`⚡ Fix locally with AI`** | PR header bar | Have the coding harness edit the checkout to address every draft (posts nothing) |
-| **Discard drafts** | PR header bar | Delete every draft; added AI suggestions go back to dismissed |
-| **AI Review** | PR header bar | Open the AI Review tab (run a read-only review, triage suggestions) |
+| **Discard drafts** | Submit review tab | Delete every draft; added AI suggestions go back to dismissed |
+| **AI Review** | Tab bar | Run a read-only review and triage its suggestions |
 | `J` / `K` | AI Review tab | Next / previous suggestion |
 | `A` / `E` / `D` | AI Review tab | Add to review / edit then add / dismiss the selected suggestion |
 | `Enter` | AI Review tab | Show the suggestion on its line in Files changed |
 | **+** on a line number | Files changed tab | Comment on the line; **Shift**-click a second + for a range |
 | `Ctrl/Cmd+Enter` / `Esc` | Comment box | Add to review / cancel |
-| **Submit Review** | PR header bar | Submit Approve / Request Changes / Comment to remote forge |
+| **Submit review** | PR header, tab bar | Open the Submit review tab: summary, drafts, Comment / Request changes / Approve |
 | **Pull** | Sidebar git panel | Fast-forward the checkout onto the PR's current head; refuses on divergence |
 | **Push** | Sidebar git panel | Push the checkout's `HEAD` to the PR's actual head branch |
 | **Commit with AI** | Sidebar git panel | Write and commit a message for the staged diff with your coding harness |

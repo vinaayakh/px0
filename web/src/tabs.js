@@ -24,6 +24,13 @@ const MAX_CLOSED = 20;
 let tabMenu = null;
 let tabMenuIndex = -1;
 
+/* A pinned virtual tab (the PR's Conversation, Files changed, AI Review and
+   Submit review) is part of the session's layout, not an open file: it has
+   no close button and no close action closes it. */
+export function isFixedTab(d) {
+  return !!(d && d.virtual && virtualTabSpec(d.path)?.pinned);
+}
+
 function closeTabMenu() {
   if (tabMenu) tabMenu.hidden = true;
   tabMenuIndex = -1;
@@ -43,12 +50,14 @@ function closeTabsForAction(action, index) {
 }
 
 function openTabMenu(index, x, y) {
+  const closable = i => !isFixedTab(S.tabs[i]);
+  const any = test => S.tabs.some((_, i) => test(i) && closable(i));
   const actions = [
-    { action: 'close', label: 'Close', disabled: false },
-    { action: 'all', label: 'Close All', disabled: false },
-    { action: 'others', label: 'Close Others', disabled: S.tabs.length < 2 },
-    { action: 'right', label: 'Close to the Right', disabled: index === S.tabs.length - 1 },
-    { action: 'left', label: 'Close to the Left', disabled: index === 0 },
+    { action: 'close', label: 'Close', disabled: !closable(index) },
+    { action: 'all', label: 'Close All', disabled: !any(() => true) },
+    { action: 'others', label: 'Close Others', disabled: !any(i => i !== index) },
+    { action: 'right', label: 'Close to the Right', disabled: !any(i => i > index) },
+    { action: 'left', label: 'Close to the Left', disabled: !any(i => i < index) },
   ];
   tabMenu.replaceChildren();
   for (const { action, label, disabled } of actions) {
@@ -429,7 +438,13 @@ export function closeTab(i) {
   closeTabs([i]);
 }
 
+// Closes every tab that can be closed; pinned PR tabs stay.
+export function closeAllTabs() {
+  closeTabs(S.tabs.map((_, i) => i));
+}
+
 function closeTabs(indices) {
+  indices = indices.filter(i => !isFixedTab(S.tabs[i]));
   if (!indices.length) return;
   // Descending indices stay valid as tabs are removed.
   indices.sort((a, b) => b - a);
@@ -501,11 +516,15 @@ export async function reopenClosedTab() {
 }
 
 export function drawTabs() {
-  $('#tabs').innerHTML = S.tabs.map((t, i) =>
-    '<div class="tab' + (i === S.active ? ' active' : '') + (t.isImage ? ' tab-image' : '') + (t.deleted ? ' tab-deleted' : '') + (t.virtual ? ' tab-virtual' : '') + '" data-i="' + i + '" title="' + esc(t.virtual ? t.name : t.path) + '">' +
+  $('#tabs').innerHTML = S.tabs.map((t, i) => {
+    const fixed = isFixedTab(t);
+    const count = t.virtual ? virtualTabSpec(t.path)?.count?.() || 0 : 0;
+    return '<div class="tab' + (i === S.active ? ' active' : '') + (t.isImage ? ' tab-image' : '') + (t.deleted ? ' tab-deleted' : '') + (t.virtual ? ' tab-virtual' : '') + (fixed ? ' tab-fixed' : '') + '" data-i="' + i + '" title="' + esc(t.virtual ? t.name : t.path) + '">' +
     (t.isImage ? '<svg class="tab-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="2"/><circle cx="5.5" cy="5.5" r="1.5"/><path d="M14 10l-3.5-3.5L3 14"/></svg>' : '') +
     '<span class="tn">' + esc(t.name) + '</span>' +
-    '<span class="x" data-close="' + i + '" title="' + withKeys('Close tab ({Alt+W})') + '"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg></span></div>').join('');
+    (count ? '<span class="tab-count">' + count + '</span>' : '') +
+    (fixed ? '' : '<span class="x" data-close="' + i + '" title="' + withKeys('Close tab ({Alt+W})') + '"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg></span>') + '</div>';
+  }).join('');
   const act = $('#tabs .tab.active');
   if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }

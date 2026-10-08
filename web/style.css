@@ -2452,10 +2452,14 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 }
 
 /* ---------- PR review (web/src/pr.js) ---------- */
+/* One row of a fixed height, so the view switches (pinned to the tab bar's
+   right end) can sit just below it instead of over its buttons. */
 .pr-bar {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 6px 12px; background: var(--bg2); border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column; justify-content: center;
+  height: 36px; box-sizing: border-box;
+  padding: 0 12px; background: var(--bg2); border-bottom: 1px solid var(--line);
 }
+body.pr-mode #view-switches { top: 39px; }
 .pr-bar[hidden] { display: none; }
 .pr-bar-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pr-link {
@@ -2766,6 +2770,32 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
   background: var(--accent); color: var(--on-accent, #fff); text-align: center; line-height: 16px;
 }
 .rv-tab-count { margin-left: 5px; }
+.pr-bar .grow, .sr-page .grow { flex: 1; min-width: 0; }
+.pr-btn-submit {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--accent); color: var(--accent-fg);
+}
+.pr-btn-submit:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.tab-count {
+  font: 700 10px var(--ui); min-width: 16px; padding: 0 4px; border-radius: 8px; flex: none;
+  background: var(--accent); color: var(--on-accent, #fff); text-align: center; line-height: 16px;
+}
+/* A pinned PR tab has no close button: keep its right padding even. */
+.tab.tab-fixed { padding-right: 10px; }
+
+/* ---------- Submit review tab (web/src/pr.js) ---------- */
+.sr-page { display: flex; flex-direction: column; gap: 14px; }
+.sr-drafts { border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); }
+.sr-drafts-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; }
+.sr-draft-count { font-size: 13px; color: var(--dim); }
+.sr-draft-list:not(:empty) { border-top: 1px solid var(--line); padding: 8px 14px; max-height: 40vh; overflow: auto; }
+.sr-label { font-size: 13px; font-weight: 600; margin-bottom: -8px; }
+.pr-review-body.sr-body {
+  flex: none; height: auto; min-height: 140px; resize: vertical; padding: 10px 12px;
+  font: 13.5px/1.55 var(--ui); border-radius: 8px;
+}
+.sr-actions { display: flex; align-items: center; }
+.sr-actions .footer-btn { height: 30px; padding: 0 14px; font-size: 13px; }
 .pr-suggested { box-shadow: 0 0 0 2px var(--accent); }
 
 .rv-run { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }

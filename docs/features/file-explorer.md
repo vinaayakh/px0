@@ -24,7 +24,7 @@ px0's file explorer eliminates unnecessary clicks by automatically collapsing si
   - Open multiple files in tabs and switch between them.
   - Switch tabs using keyboard shortcuts (`Ctrl+Tab`, `Alt+1` through `Alt+9`).
   - Close active tabs with `Alt+W` (or `Cmd/Ctrl+W`).
-  - Right-click a tab for **Close**, **Close All**, **Close Others**, **Close to the Right**, or **Close to the Left**. Actions without matching tabs are disabled.
+  - Right-click a tab for **Close**, **Close All**, **Close Others**, **Close to the Right**, or **Close to the Left**. Actions without matching tabs are disabled. In a PR session the pinned PR tabs (Conversation, Files changed, AI Review, Submit review) have no close button, and no close action removes them.
   - Image tabs, Markdown previews, diff views, and external standard library files sit cleanly alongside source files.
 
 ---

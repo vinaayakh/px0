@@ -1,7 +1,8 @@
 // web/src/pr.js
 // GitHub PR review: shown only when this process was launched as `px0 pr ...`
-// (S.meta.pr, set by main.go/pr.go). A persistent bar above the tabs shows
-// the PR and hosts Approve/Request Changes/Comment; selecting a diff line and
+// (S.meta.pr, set by main.go/pr.go). A one-row header above the tabs names
+// the PR; the Submit review tab (pr://submit, a pinned virtual tab) holds the
+// drafts, the summary and Comment/Approve/Request changes. Selecting a diff line and
 // pressing Alt+R (or the footer/context-menu action) drafts an inline review
 // comment. Everything here talks to /api/pr/*; nothing is stored client-side
 // beyond what's needed to repaint -- a page refresh re-fetches the server's
@@ -11,11 +12,12 @@ import { showToast } from './ui.js';
 import { setReviewHandler, SEL_MENU_ITEMS } from './selbar.js';
 import { diffview, setPRSyncHandler } from './diff.js';
 import { reloadWorkspace } from './agent.js';
-import { openFile } from './tabs.js';
+import { openFile, drawTabs } from './tabs.js';
 import { layout, render } from './renderer.js';
 import { openSettings } from './settings.js';
 import { emit } from './bus.js';
 import { openPullRequest } from './inbox.js';
+import { registerVirtualTab } from './virtualtab.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -24,6 +26,9 @@ let reviewComments = [];  // inline diff-line comments, already posted (fetched 
 
 const prBar = () => $('#pr-bar');
 const list = () => $('#pr-comment-list');
+
+const SR_PATH = 'pr://submit';
+let srPage = null; // the Submit review page, moved into the tab's article while shown
 
 export function initPR() {
   if (!S.meta || !S.meta.pr) return;
@@ -35,6 +40,9 @@ export function initPR() {
   }
   setReviewHandler(openCommentComposer);
   setPRSyncHandler(renderMarkersForActiveDoc);
+  srPage = $('#sr-page');
+  if (srPage) { srPage.remove(); srPage.hidden = false; }
+  registerVirtualTab(SR_PATH, { title: () => 'Submit review', pinned: true, render: srRenderTab, count: () => comments.length });
   injectFooterButton();
   wireBarButtons();
   wireCommentsPanel();
@@ -103,6 +111,27 @@ export async function refreshComments() {
   }
 }
 
+// The Submit review page is out of the document whenever its tab is not
+// shown, so its controls are looked up inside it rather than with $.
+function srQ(sel) {
+  return srPage?.querySelector(sel) || null;
+}
+
+// The tab draws by moving the one page into its article, so the summary
+// being written survives switching tabs.
+function srRenderTab(article) {
+  article.classList.add('rv-host');
+  if (srPage) article.append(srPage);
+}
+
+// Opens the Submit review tab with the summary focused.
+export async function openSubmitReview() {
+  await openFile(SR_PATH);
+  const body = srQ('#pr-review-body');
+  body?.focus();
+  return body;
+}
+
 function renderBar() {
   const b = prBar();
   if (!b || !meta) return;
@@ -115,9 +144,15 @@ function renderBar() {
   $('#pr-title').textContent = meta.title;
   $('#pr-title').title = meta.title;
   $('#pr-refs').textContent = meta.base + ' ← ' + meta.head;
-  $('#pr-draft-count').textContent = comments.length
-    ? (comments.length + (comments.length === 1 ? ' draft comment' : ' draft comments'))
-    : '';
+  srQ('#pr-draft-count').textContent = comments.length
+    ? (comments.length + (comments.length === 1 ? ' draft comment goes out with this review' : ' draft comments go out with this review'))
+    : 'No draft comments: the review is just the summary below.';
+  const badge = $('#pr-draft-badge');
+  if (badge) {
+    badge.hidden = !comments.length;
+    badge.textContent = comments.length ? String(comments.length) : '';
+  }
+  drawTabs(); // the Submit review tab's draft count
   const ro = $('#pr-readonly-note');
   if (ro) ro.hidden = !meta.readOnly;
   const dw = $('#pr-diff-warning');
@@ -125,23 +160,23 @@ function renderBar() {
     dw.hidden = !meta.diffBaseWarning;
     if (meta.diffBaseWarning) dw.title = meta.diffBaseWarning;
   }
-  const batchBtn = $('#pr-batch-apply');
+  const batchBtn = srQ('#pr-batch-apply');
   if (batchBtn) {
     const hasApplicable = comments.some(c => c.path && c.line && c.body?.trim());
     batchBtn.hidden = !hasApplicable;
   }
-  const discardBtn = $('#pr-discard-drafts');
+  const discardBtn = srQ('#pr-discard-drafts');
   if (discardBtn) discardBtn.hidden = !comments.length;
-  const reqBtn = $('#pr-submit-request-changes');
-  const appBtn = $('#pr-submit-approve');
+  const reqBtn = srQ('#pr-submit-request-changes');
+  const appBtn = srQ('#pr-submit-approve');
   if (reqBtn) reqBtn.hidden = !meta.writeAccess;
   if (appBtn) appBtn.hidden = !meta.writeAccess;
-  const cmtBtn = $('#pr-submit-comment');
+  const cmtBtn = srQ('#pr-submit-comment');
   if (cmtBtn) {
     cmtBtn.disabled = false;
     cmtBtn.title = meta.readOnly
       ? 'No GitHub token configured -- click to connect and submit'
-      : 'Submit review with drafts, without approval or change requests';
+      : 'Submit the review with its drafts, without approving or requesting changes';
   }
 }
 
@@ -151,12 +186,13 @@ export function nudgeGitHubToken() {
 }
 
 function wireBarButtons() {
-  $('#pr-batch-apply')?.addEventListener('click', batchApplyComments);
-  $('#pr-discard-drafts')?.addEventListener('click', discardAllDrafts);
+  $('#pr-open-submit')?.addEventListener('click', openSubmitReview);
+  srQ('#pr-batch-apply')?.addEventListener('click', batchApplyComments);
+  srQ('#pr-discard-drafts')?.addEventListener('click', discardAllDrafts);
   $('#pr-end-review')?.addEventListener('click', endReview);
-  $('#pr-submit-comment')?.addEventListener('click', () => submitReview('COMMENT'));
-  $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
-  $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
+  srQ('#pr-submit-comment')?.addEventListener('click', () => submitReview('COMMENT'));
+  srQ('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
+  srQ('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
   $('#pr-readonly-note')?.addEventListener('click', nudgeGitHubToken);
 }
 
@@ -248,7 +284,7 @@ async function batchApplyComments() {
     showToast('!', 'No draft comments on lines to fix');
     return;
   }
-  const btn = $('#pr-batch-apply');
+  const btn = srQ('#pr-batch-apply');
   if (btn) {
     btn.disabled = true;
     setBatchBtnLabel(btn, 'Fixing...');
@@ -273,7 +309,7 @@ async function batchApplyComments() {
 }
 
 async function pollPRBatch(id, count) {
-  const btn = $('#pr-batch-apply');
+  const btn = srQ('#pr-batch-apply');
   const poll = async () => {
     try {
       const j = await api('/api/agent/job?id=' + id);
@@ -316,7 +352,7 @@ async function submitReview(event) {
     nudgeGitHubToken();
     return;
   }
-  const bodyEl = $('#pr-review-body');
+  const bodyEl = srQ('#pr-review-body');
   const body = bodyEl ? bodyEl.value.trim() : '';
   if (event === 'REQUEST_CHANGES' && !body && !comments.length) {
     showToast('!', 'Add a comment or review body before requesting changes');
@@ -329,7 +365,7 @@ async function submitReview(event) {
     }
     comments = [];
     emit('pr:submitted');
-    for (const b of document.querySelectorAll('.pr-suggested')) b.classList.remove('pr-suggested');
+    for (const b of (srPage?.querySelectorAll('.pr-suggested') || [])) b.classList.remove('pr-suggested');
     if (bodyEl) bodyEl.value = '';
     closeAllComposers();
     renderBar();
@@ -541,16 +577,17 @@ export function setPRMarkerHook(fn) { extraMarkers = fn; }
 export function renderPRMarkers() { renderMarkersForActiveDoc(); }
 
 // Pre-fills the review form from an AI review: the summary goes in the body
-// only when it is empty, and the suggested verdict is highlighted, never
-// chosen. An approve verdict is never highlighted either.
-export function prefillReview(summary, verdict) {
-  const bodyEl = $('#pr-review-body');
-  if (bodyEl && summary && !bodyEl.value.trim()) {
+// only when it is empty (or always, with replace, for "Use as review body"),
+// and the suggested verdict is highlighted, never chosen. An approve verdict
+// is never highlighted either.
+export function prefillReview(summary, verdict, replace = false) {
+  const bodyEl = srQ('#pr-review-body');
+  if (bodyEl && summary && (replace || !bodyEl.value.trim())) {
     bodyEl.value = summary;
     bodyEl.dispatchEvent(new Event('input'));
   }
-  for (const b of document.querySelectorAll('.pr-suggested')) b.classList.remove('pr-suggested');
-  const target = verdict === 'request_changes' ? $('#pr-submit-request-changes') : $('#pr-submit-comment');
+  for (const b of (srPage?.querySelectorAll('.pr-suggested') || [])) b.classList.remove('pr-suggested');
+  const target = verdict === 'request_changes' ? srQ('#pr-submit-request-changes') : srQ('#pr-submit-comment');
   if (target && !target.hidden) target.classList.add('pr-suggested');
 }
 
@@ -660,7 +697,7 @@ function wireCommentsPanel() {
     });
   }
 
-  $('#pr-comments-list')?.addEventListener('click', e => {
+  const onListClick = e => {
     const loc = e.target.closest('.pr-comment-loc');
     if (loc) {
       revealPRLine(loc.dataset.path, loc.dataset.side || 'RIGHT', +loc.dataset.line);
@@ -673,7 +710,9 @@ function wireCommentsPanel() {
     }
     const delBtn = e.target.closest('.pr-comment-delete-btn');
     if (delBtn) deleteDraft(+delBtn.dataset.draftId);
-  });
+  };
+  $('#pr-comments-list')?.addEventListener('click', onListClick);
+  srQ('#sr-draft-list')?.addEventListener('click', onListClick);
 }
 
 // The session's drafts and the comments already posted inline, for the Files
@@ -746,6 +785,8 @@ function renderCommentsPanel() {
     }).join('');
   }
   listEl.innerHTML = html;
+  const srList = srQ('#sr-draft-list');
+  if (srList) srList.innerHTML = entries.length ? html : '';
   if (countEl) countEl.textContent = comments.length ? String(comments.length) : '';
   emit('pr:comments-changed'); // drafts or posted comments moved: Files changed redraws its threads
 }

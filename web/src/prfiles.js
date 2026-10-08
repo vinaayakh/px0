@@ -18,7 +18,7 @@ import { registerVirtualTab } from './virtualtab.js';
 import { virtualArticle, sanitizeForgeHTML } from './markdown.js';
 import { openFile } from './tabs.js';
 import { diffHunksFragment, layoutPref, setLayoutPref } from './diff.js';
-import { prDrafts, prPostedReviewComments, prSessionMeta, refreshComments, refreshExistingComments, deleteDraft, nudgeGitHubToken } from './pr.js';
+import { prDrafts, prPostedReviewComments, prSessionMeta, refreshComments, refreshExistingComments, deleteDraft, nudgeGitHubToken, openSubmitReview } from './pr.js';
 import { reviewSuggestions, triageSuggestions, reloadSuggestions } from './review.js';
 
 const PF_PATH = 'pr://files';
@@ -126,7 +126,7 @@ function pfDraw(article) {
         '<button class="opt' + (pfMode === 'split' ? ' on' : '') + '" type="button" data-pf-mode="split">Split</button>' +
         '<button class="opt' + (pfMode === 'unified' ? ' on' : '') + '" type="button" data-pf-mode="unified">Unified</button></span>' +
       '<button class="opt" type="button" data-pf-fold-all title="Collapse or expand every file">Collapse all</button>' +
-      '<button class="footer-btn pf-finish" type="button" data-pf-finish title="Write the review summary and submit, in the PR bar above">Finish your review</button>' +
+      '<button class="footer-btn pf-finish" type="button" data-pf-finish title="Write the review summary and submit it, in the Submit review tab">Finish your review</button>' +
     '</div>' +
     (pfData.truncated ? '<div class="pf-msg pf-warn">The diff is too large to show whole; the last files are left out.</div>' : '') +
     '<div class="pf-layout">' +
@@ -278,10 +278,9 @@ function pfFoldAll() {
   if (btn) btn.textContent = allShut ? 'Collapse all' : 'Expand all';
 }
 
-function pfFinish() {
-  const body = $('#pr-review-body');
+async function pfFinish() {
+  const body = await openSubmitReview();
   if (!body) return;
-  body.focus();
   body.classList.add('pf-flash');
   setTimeout(() => body.classList.remove('pf-flash'), 1200);
 }
