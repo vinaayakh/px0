@@ -85,7 +85,10 @@ function buildWithNode() {
 
   for (const modPath of moduleOrder) {
     const rel = path.relative(rootDir, modPath);
-    let src = fs.readFileSync(modPath, 'utf8');
+    // LF only: a checkout with Windows line endings would otherwise leave
+    // stray CRs in the bundle, since ^ in a multiline pattern also matches
+    // right after a \r, and the \s* that follows swallows the \n.
+    let src = fs.readFileSync(modPath, 'utf8').replace(/\r\n?/g, '\n');
 
     for (const m of src.matchAll(declRegex)) {
       const prev = declaredIn.get(m[1]);

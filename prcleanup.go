@@ -116,42 +116,17 @@ func processAlive(pid int) bool {
 // reviewer's repository: refs px0 left there for reviews no live checkout
 // owns are removed too, and stale worktree registrations are pruned.
 func sweepStalePRCheckouts(tmpDir, repo string, alive func(int) bool) []string {
-	var removed []string
+	// Every marker first, to know which reviews are live before removing
+	// anything: a dead review of the same PR as a live one names the live
+	// one's refs too, and those stay.
+	type found struct {
+		m      prMarker
+		dir    string // the checkout, "" when it is already gone
+		marker string
+	}
+	var dead []found
 	live := map[string]map[int]bool{} // repo -> PR numbers still under review
-	keep := func(m prMarker) {
-		if m.SrcRepo == "" {
-			return
-		}
-		key := normRepoPath(m.SrcRepo)
-		if live[key] == nil {
-			live[key] = map[int]bool{}
-		}
-		live[key][m.Number] = true
-	}
-
-	// Checkouts, marked or not.
-	dirs, _ := filepath.Glob(filepath.Join(tmpDir, prCheckoutPrefix+"*"))
-	for _, d := range dirs {
-		if strings.HasSuffix(d, prMarkerSuffix) {
-			continue
-		}
-		st, err := os.Stat(d)
-		if err != nil || !st.IsDir() {
-			continue
-		}
-		m, ok := readPRMarker(prMarkerPath(d))
-		switch {
-		case ok && alive(m.PID):
-			keep(m)
-		case ok:
-			removePRCheckout(m.SrcRepo, d, m.Number, m.SessionFile)
-			removed = append(removed, d)
-		case time.Since(st.ModTime()) > prUnmarkedGrace:
-			os.RemoveAll(d)
-			removed = append(removed, d)
-		}
-	}
-	// Markers whose checkout is already gone still name refs to remove.
+	isLive := func(repo string, num int) bool { return live[normRepoPath(repo)][num] }
 	markers, _ := filepath.Glob(filepath.Join(tmpDir, prCheckoutPrefix+"*"+prMarkerSuffix))
 	for _, mp := range markers {
 		m, ok := readPRMarker(mp)
@@ -159,15 +134,50 @@ func sweepStalePRCheckouts(tmpDir, repo string, alive func(int) bool) []string {
 			os.Remove(mp)
 			continue
 		}
-		if _, err := os.Stat(m.Worktree); err == nil {
-			continue // handled above
-		}
 		if alive(m.PID) {
-			keep(m)
+			if m.SrcRepo != "" {
+				key := normRepoPath(m.SrcRepo)
+				if live[key] == nil {
+					live[key] = map[int]bool{}
+				}
+				live[key][m.Number] = true
+			}
 			continue
 		}
-		removePRCheckout(m.SrcRepo, m.Worktree, m.Number, m.SessionFile)
-		os.Remove(mp)
+		f := found{m: m, marker: mp}
+		if st, err := os.Stat(m.Worktree); err == nil && st.IsDir() {
+			f.dir = m.Worktree
+		}
+		dead = append(dead, f)
+	}
+
+	var removed []string
+	for _, f := range dead {
+		num := f.m.Number
+		if f.m.SrcRepo != "" && isLive(f.m.SrcRepo, num) {
+			num = 0 // keep the refs: a live review of the same PR uses them
+		}
+		removePRCheckout(f.m.SrcRepo, f.m.Worktree, num, f.m.SessionFile)
+		os.Remove(f.marker)
+		if f.dir != "" {
+			removed = append(removed, f.dir)
+		}
+	}
+
+	// Checkouts without a marker: made before markers existed, or by a px0
+	// that died before writing one. A young one may still be in the making.
+	dirs, _ := filepath.Glob(filepath.Join(tmpDir, prCheckoutPrefix+"*"))
+	for _, d := range dirs {
+		if strings.HasSuffix(d, prMarkerSuffix) {
+			continue
+		}
+		if _, err := os.Stat(prMarkerPath(d)); err == nil {
+			continue // live: its marker is still there
+		}
+		if st, err := os.Stat(d); err == nil && st.IsDir() && time.Since(st.ModTime()) > prUnmarkedGrace {
+			os.RemoveAll(d)
+			removed = append(removed, d)
+		}
 	}
 
 	if repo != "" && gitAvailable(repo) {
@@ -177,7 +187,7 @@ func sweepStalePRCheckouts(tmpDir, repo string, alive func(int) bool) []string {
 			top = strings.TrimSpace(string(out))
 		}
 		for _, n := range px0RefNumbers(repo) {
-			if live[normRepoPath(top)][n] || live[normRepoPath(repo)][n] {
+			if isLive(top, n) || isLive(repo, n) {
 				continue
 			}
 			exec.Command("git", "-C", repo, "update-ref", "-d", fmt.Sprintf("refs/px0/pr/%d", n)).Run()

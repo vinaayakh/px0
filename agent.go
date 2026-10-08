@@ -624,6 +624,44 @@ func agentPresetNames() []string {
 
 // Detect reports every harness px0 knows and whether it is installed right
 // now, so a tool installed since startup shows up without a restart.
+// harnessPathTTL is how long a harness binary lookup is reused. Searching
+// PATH under every executable extension costs tens of milliseconds per
+// harness on Windows, and the page asks on every load; a harness installed
+// meanwhile shows up within this long.
+const harnessPathTTL = 30 * time.Second
+
+var (
+	harnessPathMu    sync.Mutex
+	harnessPathCache = map[string]harnessPathEntry{}
+)
+
+type harnessPathEntry struct {
+	bin string
+	ok  bool
+	at  time.Time
+}
+
+func cachedHarnessPath(name string) (string, bool) {
+	harnessPathMu.Lock()
+	e, hit := harnessPathCache[name]
+	harnessPathMu.Unlock()
+	if hit && time.Since(e.at) < harnessPathTTL {
+		return e.bin, e.ok
+	}
+	bin, ok := lookPathIn(name, lspBinDirs())
+	harnessPathMu.Lock()
+	harnessPathCache[name] = harnessPathEntry{bin, ok, time.Now()}
+	harnessPathMu.Unlock()
+	return bin, ok
+}
+
+// warmHarnessPaths fills the lookup cache ahead of the page's first ask.
+func warmHarnessPaths() {
+	for _, p := range agentPresets {
+		cachedHarnessPath(p.Args[0])
+	}
+}
+
 func (m *agentManager) Detect() []agentHarness {
 	m.mu.Lock()
 	savedModels := make(map[string]string, len(m.models))
@@ -634,7 +672,7 @@ func (m *agentManager) Detect() []agentHarness {
 
 	out := make([]agentHarness, 0, len(agentPresets))
 	for _, p := range agentPresets {
-		bin, ok := lookPathIn(p.Args[0], lspBinDirs())
+		bin, ok := cachedHarnessPath(p.Args[0])
 		models := discoverHarnessModels(p.Name, bin, p.Models)
 		curModel := savedModels[p.Name]
 		if curModel == "" {

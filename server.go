@@ -302,6 +302,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") && !isSSE {
+		if s.servePrecompressed(rec, r) {
+			return
+		}
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Add("Vary", "Accept-Encoding")
 		gz := gzipPool.Get().(*gzip.Writer)
@@ -559,7 +562,7 @@ func (s *Server) handleThemes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	n, at, ms := s.ix.Stats()
 	gitCount, gitFiles := s.ix.GitChanges()
-	githubToken, _ := resolveGitHubToken(readSettings())
+	githubToken, _ := s.inboxToken() // cached: resolving may spawn `gh auth token`, and every page load asks
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),

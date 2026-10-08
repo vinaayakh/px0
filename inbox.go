@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -203,12 +204,21 @@ func (s *Server) inboxToken() (token, source string) {
 	}
 	inboxMu.Lock()
 	defer inboxMu.Unlock()
-	if time.Since(inboxTokAt) > inboxTokenTTL {
+	if githubTokenStale.Swap(false) || time.Since(inboxTokAt) > inboxTokenTTL {
 		inboxTok, inboxTokFrom = resolveGitHubToken(readSettings())
 		inboxTokAt = time.Now()
 	}
 	return inboxTok, inboxTokFrom
 }
+
+// githubTokenStale makes the next inboxToken resolve again. An atomic, not
+// inboxMu: it is set while the settings lock is held, and inboxToken takes
+// inboxMu before reading settings.
+var githubTokenStale atomic.Bool
+
+// forgetGitHubToken is called after the settings that may hold the token
+// were written.
+func forgetGitHubToken() { githubTokenStale.Store(true) }
 
 // handleInbox serves one section of one repository: GET
 // ?section=all|review|mine&repo=owner/name, &refresh=1 to skip the cache.

@@ -755,5 +755,7 @@ func writeRawMapLocked(p string, raw map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0o644)
+	err = os.WriteFile(p, append(data, '\n'), 0o644)
+	forgetGitHubToken() // a token saved in Settings counts at once
+	return err
 }

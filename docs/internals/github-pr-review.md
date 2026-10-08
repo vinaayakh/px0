@@ -67,7 +67,7 @@ provider, target, ok := DetectPRURL(arg0)
 
 ## 3. Checkout Lifecycle & Progress Narration
 
-`checkoutPR` (`pr.go`) executes the following sequence:
+`checkoutPR` (`pr.go`) is almost all network round trips, so it runs whatever does not depend on something else at the same time:
 
 ```mermaid
 sequenceDiagram
@@ -78,26 +78,40 @@ sequenceDiagram
 
     CLI->>PR: checkoutPR(ctx, provider, target, cwd, onProgress)
     PR->>Prov: ResolveToken(cfg)
-    PR->>Prov: FetchPR(ctx, target, token)
-    Prov-->>PR: PRMeta (title, refs, state, merged)
-    PR->>Git: Local clone exists? (git remote get-url origin)
-    alt Matches Origin
-        PR->>Git: git fetch refs/pull/n/head:refs/px0/pr/n
-        PR->>Git: git worktree add --detach <tmp> refs/px0/pr/n
-    else External / Fork
-        PR->>Git: git clone --filter=blob:none --branch <headRef> <tmp>
+    par started at once
+        PR->>Prov: FetchConversation, FetchComments (prwarm.go)
+    and
+        PR->>Prov: CheckPushAccess(ctx, target, token)
+    and
+        PR->>Prov: FetchPR(ctx, target, token)
+        Prov-->>PR: PRMeta (title, refs, state, merged)
+    and from a local clone (cwd, else a saved one: repos.go)
+        PR->>Git: git fetch <remote> refs/pull/n/head:refs/px0/pr/n
     end
-    PR->>Git: git fetch refs/heads/<baseRef> & git merge-base HEAD
-    PR->>Prov: CheckPushAccess(ctx, target, token)
+    PR->>PR: mkdir <tmp>, write its marker (prcleanup.go)
+    alt Local clone
+        par
+            PR->>Git: git -c checkout.workers=0 worktree add --detach <tmp> refs/px0/pr/n
+        and
+            PR->>Git: git fetch <remote> refs/heads/<baseRef>:refs/px0/base/n
+        end
+    else No local clone
+        PR->>Git: git -c checkout.workers=0 clone --filter=blob:none --branch <headRef> <tmp>
+        PR->>Git: git fetch refs/heads/<baseRef>
+    end
+    PR->>Git: git merge-base HEAD refs/px0/base/n
     PR-->>CLI: *prSession
 ```
 
+Measured on Windows against `cli/cli` (about 1,500 files) from a local clone, the URL prints about 2.3 s after start, down from 4.6–6.1 s when the steps ran one after another. Each fetch is about a second of round trip whatever it downloads, `worktree add` about 0.9 s with parallel checkout (1.4 s without), and the metadata request about 0.7 s.
+
+The conversation and the comments already on the PR need only the PR's address and the token, so they are fetched alongside the checkout (`prwarm.go`) and handed to the page's first request for each; later requests fetch fresh. The startup sweep of dead reviews (`prcleanup.go`) runs in the background after the checkout, so deleting an old checkout never delays a new one.
+
 ### CLI Progress Narration
 `checkoutPR` accepts an `onProgress func(string)` callback. In `main.go`, this drives a smooth amber `uiSpinner`:
-1. `Fetching PR #... metadata from <provider>...`
-2. `Fetching PR #... head and preparing worktree...` (or cloning)
-3. `Computing merge base with <baseRef>...`
-4. `PR #... checked out (<title>)` (or `[merged]` if already merged)
+1. `Fetching PR #... from <provider> into <clone>...` (or `metadata from <provider>` without a local clone)
+2. `Checking out PR #... and fetching <baseRef>...` (or `Cloning PR #...`)
+3. `PR #... checked out (<title>)` (or `[merged]` if already merged)
 
 ### Merged PR Handling
 When `meta.Merged` is true, px0 does not block or prompt: it proceeds immediately to check out the PR and surfaces the merged status with a `[merged]` badge in the CLI and a purple `Merged` pill badge in the review header.

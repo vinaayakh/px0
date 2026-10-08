@@ -639,6 +639,16 @@ func (s *Server) handlePRConversation(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	// The first request takes the conversation fetched alongside the checkout.
+	if warm := p.takeWarmConv(); warm != nil && r.URL.Query().Get("refresh") == "" {
+		if conv, at, ok := warm.take(ctx); ok {
+			p.mu.Lock()
+			p.conv = &convCache{conv: conv, at: at}
+			p.mu.Unlock()
+			writeJSON(w, map[string]any{"conversation": conv, "fetchedAt": at})
+			return
+		}
+	}
 	conv, err := p.provider.FetchConversation(ctx, target, token)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err.Error())

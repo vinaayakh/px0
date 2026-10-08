@@ -65,6 +65,11 @@ initProblems();
 
 // Bootstrap application lifecycle
 (async function boot() {
+  // index.html loads the web font's stylesheet as media="print" so that a
+  // slow or offline fonts.googleapis.com never holds up the first paint;
+  // applying it here keeps the page's CSP free of inline handlers.
+  const fontCss = document.getElementById('font-css');
+  if (fontCss) fontCss.media = 'all';
   try {
     initTheme();
 
@@ -182,6 +187,9 @@ initProblems();
 
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => { measure(); layout(); render(); });
+    // The web font's stylesheet loads without blocking the page (boot), so
+    // the font can arrive after the first measure: measure again when it does.
+    document.fonts.addEventListener?.('loadingdone', () => { measure(); layout(); render(); });
   }
 
   // If the background indexer was still running when the UI loaded, poll briefly

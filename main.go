@@ -107,6 +107,13 @@ func main() {
 			target = arg0
 		}
 	}
+	// Compress the page's large files while the workspace or the PR checkout
+	// is being prepared (staticgz.go).
+	go warmStaticGz()
+	if !*noAgent {
+		go warmHarnessPaths() // the page's harness picker asks on load
+	}
+
 	inboxDir := ""
 	if isInbox {
 		d, err := os.MkdirTemp("", "px0-inbox-*")
@@ -118,18 +125,6 @@ func main() {
 	}
 	if isPR && gitDisabled {
 		fatal(fmt.Errorf("px0: git is required for PR review; remove -no-git"))
-	}
-
-	// Remove what earlier reviews left behind when their px0 was killed or
-	// crashed before the review ended (prcleanup.go).
-	sweepRepo := ""
-	if !gitDisabled {
-		if info := gitProbe("."); info.ok {
-			sweepRepo = info.toplevel
-		}
-	}
-	if gone := sweepStalePRCheckouts(os.TempDir(), sweepRepo, processAlive); len(gone) > 0 {
-		uiBullet(fmt.Sprintf("removed %d leftover PR review checkout(s)", len(gone)), os.Stdout)
 	}
 
 	var pr *prSession
@@ -167,6 +162,22 @@ func main() {
 			go rememberWorkspaceRepo(root)
 		}
 	}
+
+	// Remove what earlier reviews left behind when their px0 was killed or
+	// crashed before the review ended (prcleanup.go). In the background, so
+	// deleting an old checkout never delays this one; after the checkout, so
+	// this review's marker already protects its refs.
+	go func() {
+		sweepRepo := ""
+		if !gitDisabled {
+			if info := gitProbe("."); info.ok {
+				sweepRepo = info.toplevel
+			}
+		}
+		if gone := sweepStalePRCheckouts(os.TempDir(), sweepRepo, processAlive); len(gone) > 0 {
+			uiBullet(fmt.Sprintf("removed %d leftover PR review checkout(s)", len(gone)), os.Stdout)
+		}
+	}()
 
 	tListen := time.Now()
 	ln, addr, err := listen(*host, *port)
