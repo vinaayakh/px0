@@ -41,6 +41,7 @@ type prSession struct {
 
 	worktree    string // temp checkout, removed in Close
 	srcRepo     string // the repo the worktree was registered against ("" for a plain clone)
+	srcRemote   string // srcRepo's remote that is the PR's repository: origin, or upstream in a fork's clone
 	sessionFile string // UI session state kept for this checkout only, removed in Close
 
 	comments []prComment
@@ -65,14 +66,17 @@ var ErrPRMergedCancelled = errors.New("PR is already merged; opening cancelled")
 // why, so callers can surface it and a blank diff never reads as "no
 // changes". Shared by checkoutPR (initial checkout) and prSession.Pull
 // (re-sync after new commits land on the PR).
-func computeDiffBase(worktree, srcRepo string, target PRTarget, baseRef string, num int, onProgress func(string)) (diffBase, diffBaseWarning string) {
+func computeDiffBase(worktree, srcRepo, srcRemote string, target PRTarget, baseRef string, num int, onProgress func(string)) (diffBase, diffBaseWarning string) {
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("Computing merge base with %s...", baseRef))
 	}
 	diffBase = "HEAD"
 	var fetchErr string
 	baseRefspec := fmt.Sprintf("refs/heads/%s:refs/px0/base/%d", baseRef, num)
-	baseRemote := "origin"
+	if srcRemote == "" {
+		srcRemote = "origin"
+	}
+	baseRemote := srcRemote
 	if srcRepo == "" {
 		baseRemote = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
 	}
@@ -85,7 +89,7 @@ func computeDiffBase(worktree, srcRepo string, target PRTarget, baseRef string, 
 		diffBase = mb
 	}
 	if diffBase == "HEAD" && srcRepo != "" {
-		if mb := gitMergeBase(worktree, "HEAD", "origin/"+baseRef); mb != "" {
+		if mb := gitMergeBase(worktree, "HEAD", srcRemote+"/"+baseRef); mb != "" {
 			diffBase = mb
 			fetchErr = "" // recovered via the local clone's own remote-tracking ref
 		}
@@ -133,25 +137,24 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 	}
 	cleanup := func() { os.RemoveAll(tmp) }
 
-	srcRepo := ""
-	if info := gitProbe(cwd); info.ok {
-		if originURL, err := exec.Command("git", "-C", info.toplevel, "remote", "get-url", "origin").Output(); err == nil {
-			orig := strings.ToLower(strings.TrimSpace(string(originURL)))
-			if target.Owner != "" && target.Repo != "" &&
-				strings.Contains(orig, strings.ToLower(target.Owner)) &&
-				strings.Contains(orig, strings.ToLower(target.Repo)) {
-				srcRepo = info.toplevel
-			}
+	// The clone to check out of: cwd when it is one of the PR's repository,
+	// else a saved local clone of it (repos.go), else a fresh clone below.
+	srcRepo, srcRemote := "", ""
+	if target.Owner != "" && target.Repo != "" {
+		if top, rem, ok := cloneOf(cwd, target.Owner, target.Repo); ok {
+			srcRepo, srcRemote = top, rem
+		} else if top, rem, ok := findLocalClone(target.Owner, target.Repo); ok {
+			srcRepo, srcRemote = top, rem
 		}
 	}
 
 	num := target.Number
 	if srcRepo != "" {
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("Fetching PR #%d head and preparing worktree...", num))
+			onProgress(fmt.Sprintf("Fetching PR #%d head into %s and preparing worktree...", num, srcRepo))
 		}
 		headRefspec := fmt.Sprintf("refs/pull/%d/head:refs/px0/pr/%d", num, num)
-		if out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", "origin", headRefspec).CombinedOutput(); err != nil {
+		if out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", srcRemote, headRefspec).CombinedOutput(); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
 		}
@@ -173,7 +176,7 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 		}
 	}
 
-	diffBase, diffBaseWarning := computeDiffBase(tmp, srcRepo, target, meta.BaseRef, num, onProgress)
+	diffBase, diffBaseWarning := computeDiffBase(tmp, srcRepo, srcRemote, target, meta.BaseRef, num, onProgress)
 
 	writeAccess := provider.CheckPushAccess(ctx, target, token)
 
@@ -187,6 +190,7 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 		diffBaseWarning: diffBaseWarning,
 		worktree:        tmp,
 		srcRepo:         srcRepo,
+		srcRemote:       srcRemote,
 	}
 	p.writeMarker()
 	return p, nil
@@ -218,7 +222,10 @@ var errPRDiverged = errors.New("local checkout has diverged from the PR head; re
 // should surface errPRDiverged as "not supported, resolve manually".
 func (p *prSession) Pull() (info string, err error) {
 	p.mu.Lock()
-	worktree, srcRepo, num := p.worktree, p.srcRepo, p.meta.Number
+	worktree, srcRepo, srcRemote, num := p.worktree, p.srcRepo, p.srcRemote, p.meta.Number
+	if srcRemote == "" {
+		srcRemote = "origin"
+	}
 	target, baseRef := p.target, p.meta.BaseRef
 	headRepoCloneURL, headRef := p.meta.HeadRepoCloneURL, p.meta.HeadRef
 	p.mu.Unlock()
@@ -230,7 +237,7 @@ func (p *prSession) Pull() (info string, err error) {
 	newRef := fmt.Sprintf("refs/px0/pr/%d", num)
 	if srcRepo != "" {
 		headRefspec := fmt.Sprintf("refs/pull/%d/head:%s", num, newRef)
-		if out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", "origin", headRefspec).CombinedOutput(); err != nil {
+		if out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", srcRemote, headRefspec).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 	} else {
@@ -258,7 +265,7 @@ func (p *prSession) Pull() (info string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
 	}
-	diffBase, diffBaseWarning := computeDiffBase(worktree, srcRepo, target, baseRef, num, nil)
+	diffBase, diffBaseWarning := computeDiffBase(worktree, srcRepo, srcRemote, target, baseRef, num, nil)
 
 	p.mu.Lock()
 	p.meta.HeadSHA = strings.TrimSpace(string(shaOut))

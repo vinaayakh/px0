@@ -112,9 +112,10 @@ Drafts are not on GitHub until you submit the review (or post one with **Comment
 ### 6. AI Review: Suggestions You Curate
 **AI Review** in the PR bar opens the **AI Review** tab, pinned after Files changed. Pick a harness and model, optionally type a focus ("security only"), and press **Run AI Review**. The harness reviews the PR read-only in the checkout: it can open any file and read `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`, but its file-writing tools are turned off. Only harnesses px0 can run read-only are offered: Claude Code and Codex.
 
-What comes back are *suggestions*, not comments. Nothing is posted until you act:
-- Each suggestion shows its severity, category, confidence, the line it is on and, when it proposes code, the change. Low-confidence ones are collapsed.
-- **A** adds to your review, **E** edits then adds, **D** dismisses, **J**/**K** move. **Add all** per file and **Dismiss nits** work on many at once.
+What comes back are *suggestions*, not comments: one per finding, never two issues in one. Nothing is posted until you act:
+- The list is sorted by priority across all files: **Critical**, **High**, **Medium**, **Low**, each under its own heading, and within a severity the more confident first.
+- Each suggestion shows its severity, category, confidence, its file and line and, when it proposes code, the change. Low-confidence ones are collapsed.
+- Each one is added on its own: **A** adds it to your review as a separate draft comment, **P** posts it now as its own comment (**Comment now**), **E** edits then adds, **D** dismisses, **J**/**K** move. **Dismiss Low** clears every pending Low at once.
 - Clicking a suggestion (or **Enter**) opens **Files changed** at its line, its lines highlighted and its card outlined, so you can read it against the code and act on it there. Clicking a file name opens that file.
 - Added and edited suggestions become ordinary drafts. They are submitted with your review, under your name, and **⚡ Fix locally with AI** can hand them to a harness like any other draft. **Comment now** posts one straight away instead, and it is marked *posted*. A proposed change is posted as a GitHub suggestion block.
 - In the single-file diff, pending suggestions have their own star marker in the gutter, distinct from your drafts and posted comments; clicking it opens the AI Review tab.
@@ -122,7 +123,7 @@ What comes back are *suggestions*, not comments. Nothing is posted until you act
 
 px0 checks every suggestion against the real diff before showing it, because models misreport line numbers. A suggestion whose line and quoted text agree stays put; one whose quoted text is found on a single nearby line is moved there and marked **re-anchored**; anything else becomes a **file-level** comment (posted in the review body under the file's name), and a comment on a file outside the PR becomes a **summary note**. None are dropped. If the harness changes a file anyway, the run is flagged and px0 leaves the change for you to inspect.
 
-The review instructions are a markdown skill: `review.skillPath` in Settings, else `~/.px0/skills/review.md`, else the built-in skill. px0 always appends its output format, so a custom skill cannot break parsing. Running again replaces the pending suggestions; accepted, edited and dismissed ones stay, and a suggestion you already accepted or dismissed is not shown again.
+The review instructions are a markdown skill: `review.skillPath` in Settings, else `~/.px0/skills/review.md`, else the built-in skill, a senior-architect review of only what the PR changes and the code it affects, which checks each changed function's callers and tests and reports only issues it can show failing. px0 always appends its output format, so a custom skill cannot break parsing. Running again replaces the pending suggestions; accepted, edited and dismissed ones stay, and a suggestion you already accepted or dismissed is not shown again.
 
 If the PR moves after a review run (you Pull new commits, or GitHub reports new ones when you submit), the pending suggestions are marked **stale**: their lines may have moved, so they cannot be accepted until you press **Re-check**, which places them again against the current diff. Dismissing still works.
 

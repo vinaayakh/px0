@@ -188,6 +188,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/submit"), s.handlePRSubmit)
 	s.mux.HandleFunc(s.routePath("/api/pr/end"), s.handlePREnd)
 	s.mux.HandleFunc(s.routePath("/api/pr/launch"), s.handleLaunchPR)
+	s.mux.HandleFunc(s.routePath("/api/repos"), s.handleRepos)
+	s.mux.HandleFunc(s.routePath("/api/repos/remove"), s.handleReposRemove)
+	s.mux.HandleFunc(s.routePath("/api/repos/browse"), s.handleReposBrowse)
 	s.mux.HandleFunc(s.routePath("/api/pr/existing-comments"), s.handlePRExistingComments)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/issue"), s.handlePRIssueCommentPost)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/review-reply"), s.handlePRReviewCommentReply)
@@ -484,6 +487,9 @@ func (s *Server) SetPR(p *prSession) {
 			if len(p.comments) == 0 && len(s.session.Get().Drafts) > 0 {
 				p.comments = append([]prComment(nil), s.session.Get().Drafts...)
 				for _, c := range p.comments {
+					if c.AI != nil { // saved by an older px0 with blocker/major/minor/nit
+						c.AI.Severity = normSeverity(c.AI.Severity)
+					}
 					if c.ID > p.nextID {
 						p.nextID = c.ID
 					}

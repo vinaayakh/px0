@@ -14,7 +14,7 @@ import { showToast } from './ui.js';
 import { registerAgentPicker } from './agent.js';
 import { registerVirtualTab } from './virtualtab.js';
 import { openFile } from './tabs.js';
-import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview } from './pr.js';
+import { refreshComments, setPRMarkerHook, renderPRMarkers, prefillReview, prSessionMeta, nudgeGitHubToken } from './pr.js';
 
 const RV_PATH = 'pr://review';
 let rvPage = null;        // the page, moved into the tab's article while shown
@@ -30,7 +30,10 @@ let rvStale = 0;          // pending suggestions made against an older head
 let rvHeadMoved = false;  // GitHub has a newer head than this checkout
 const rvExpanded = new Set(); // low-confidence ids the reviewer opened
 
-const RV_SEV_RANK = { blocker: 0, major: 1, minor: 2, nit: 3 };
+// The review skill's scale, most severe first: the list is sorted by it.
+const RV_SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const RV_SEV_LABEL = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
+const rvSev = s => (s?.ai?.severity in RV_SEV_RANK ? s.ai.severity : 'medium');
 const RV_LOW_CONFIDENCE = 0.5;
 const RV_ANCHOR_LABEL = { anchored: '', reanchored: 're-anchored', file: 'file-level', summary: 'summary note' };
 
@@ -54,8 +57,8 @@ export function initReview() {
     for (const x of rvQ('#rv-filters').children) x.classList.toggle('on', x === b);
     rvRenderList();
   });
-  rvQ('#rv-dismiss-nits')?.addEventListener('click', () => {
-    const ids = rvItems.filter(s => s.status === 'pending' && s.ai?.severity === 'nit').map(s => s.id);
+  rvQ('#rv-dismiss-low')?.addEventListener('click', () => {
+    const ids = rvItems.filter(s => s.status === 'pending' && rvSev(s) === 'low').map(s => s.id);
     if (ids.length) rvTriage(ids, 'dismiss');
   });
   rvQ('#rv-alert')?.addEventListener('click', e => {
@@ -299,8 +302,9 @@ function rvCountsText(r) {
 
 function rvVisible() {
   const items = rvFilter === 'pending' ? rvItems.filter(s => s.status === 'pending') : rvItems.slice();
-  items.sort((a, b) => a.path.localeCompare(b.path) ||
-    (RV_SEV_RANK[a.ai?.severity] ?? 2) - (RV_SEV_RANK[b.ai?.severity] ?? 2) || a.line - b.line);
+  // By priority, as the server orders them: severity, confidence, position.
+  items.sort((a, b) => RV_SEV_RANK[rvSev(a)] - RV_SEV_RANK[rvSev(b)] ||
+    (b.ai?.confidence ?? 0) - (a.ai?.confidence ?? 0) || a.path.localeCompare(b.path) || a.line - b.line);
   return items;
 }
 
@@ -313,7 +317,7 @@ function rvLocLabel(s) {
 
 function rvItemHtml(s) {
   const ai = s.ai || {};
-  const sev = ai.severity || 'minor';
+  const sev = rvSev(s);
   const low = (ai.confidence ?? 1) < RV_LOW_CONFIDENCE;
   const collapsed = low && !rvExpanded.has(s.id) && s.id !== rvEditId;
   const anchor = RV_ANCHOR_LABEL[ai.anchor] || '';
@@ -326,8 +330,9 @@ function rvItemHtml(s) {
   if (collapsed) cls.push('collapsed');
   let html = '<div class="' + cls.join(' ') + '" data-id="' + s.id + '">' +
     '<div class="rv-head">' +
-      '<span class="rv-sev rv-sev-' + esc(sev) + '">' + esc(sev) + '</span>' +
+      '<span class="rv-sev rv-sev-' + esc(sev) + '">' + esc(RV_SEV_LABEL[sev]) + '</span>' +
       (ai.category ? '<span class="rv-cat">' + esc(ai.category) + '</span>' : '') +
+      '<span class="rv-path" data-rv-file="' + esc(s.path) + '" title="Show ' + esc(s.path) + ' in Files changed">' + esc(s.path) + '</span>' +
       '<span class="rv-loc" data-rv-jump title="Open this line in the diff">' + esc(rvLocLabel(s)) + '</span>' +
       (anchor ? '<span class="rv-anchor rv-anchor-' + esc(ai.anchor) + '" title="' + esc(anchorTitle) + '">' + esc(anchor) + '</span>' : '') +
       (ai.stale ? '<span class="rv-anchor rv-anchor-file" title="Made against an older PR head: re-check before accepting">stale</span>' : '') +
@@ -353,7 +358,8 @@ function rvItemHtml(s) {
   }
   html += '<div class="rv-actions">';
   if (s.status === 'pending') {
-    html += '<button class="opt rv-accept" type="button" data-rv-act="accept" title="Add to your review as a draft comment (A)">Add to review</button>' +
+    html += '<button class="opt rv-accept" type="button" data-rv-act="accept" title="Add to your review as its own draft comment (A)">Add to review</button>' +
+      '<button class="opt" type="button" data-rv-act="post" title="Post this comment to the PR now, on its own (P)">Comment now</button>' +
       '<button class="opt" type="button" data-rv-act="edit" title="Edit, then add to your review (E)">Edit</button>' +
       '<button class="opt" type="button" data-rv-act="dismiss" title="Dismiss (D)">Dismiss</button>';
   } else if (s.status !== 'posted') {
@@ -376,15 +382,14 @@ function rvRenderList() {
     return;
   }
   if (!items.some(s => s.id === rvSelId)) rvSelId = items[0].id;
+  // One flat list in priority order, with a heading where each severity starts.
   let html = '';
-  let path = null;
+  let sev = null;
   for (const s of items) {
-    if (s.path !== path) {
-      path = s.path;
-      const pendingHere = items.filter(x => x.path === path && x.status === 'pending').length;
-      html += '<div class="rv-file"><span class="rv-file-path" data-rv-file="' + esc(path) + '" title="Show ' + esc(path) + ' in Files changed">' + esc(path) + '</span><span class="grow"></span>' +
-        (pendingHere > 1 ? '<button class="opt" type="button" data-rv-accept-file="' + esc(path) + '" title="Add every pending suggestion in this file to your review">Add all</button>' : '') +
-        '</div>';
+    if (rvSev(s) !== sev) {
+      sev = rvSev(s);
+      const n = items.filter(x => rvSev(x) === sev).length;
+      html += '<div class="rv-group"><span class="rv-sev rv-sev-' + sev + '">' + RV_SEV_LABEL[sev] + '</span><span class="rv-group-n">' + n + '</span></div>';
     }
     html += rvItemHtml(s);
   }
@@ -415,6 +420,7 @@ function rvAct(s, act) {
   if (!s) return;
   switch (act) {
     case 'accept': rvTriage([s.id], 'accept'); break;
+    case 'post': rvPost(s); break;
     case 'dismiss': rvTriage([s.id], 'dismiss'); break;
     case 'restore': rvTriage([s.id], 'restore'); break;
     case 'edit': rvEditId = s.id; rvRenderList(); break;
@@ -428,13 +434,21 @@ function rvAct(s, act) {
   }
 }
 
-function rvOnClick(e) {
-  const acceptFile = e.target.closest('[data-rv-accept-file]');
-  if (acceptFile) {
-    const path = acceptFile.dataset.rvAcceptFile;
-    rvTriage(rvItems.filter(s => s.path === path && s.status === 'pending').map(s => s.id), 'accept');
+// Posts one suggestion to the PR now, as its own comment.
+async function rvPost(s) {
+  if (prSessionMeta()?.readOnly) { nudgeGitHubToken(); return; }
+  if (s.ai?.stale) { showToast('!', 'Made against an older PR head: re-check it before posting'); return; }
+  try {
+    await apiPostJson('/api/pr/comments/post', { id: s.id });
+  } catch (e) {
+    showToast('!', e.message || 'Could not post the comment');
     return;
   }
+  showToast('✓', 'Comment posted to the PR');
+  await Promise.all([rvLoad(), refreshComments()]);
+}
+
+function rvOnClick(e) {
   const file = e.target.closest('[data-rv-file]');
   if (file) {
     openFile('pr://files').then(() => emit('files:reveal', { path: file.dataset.rvFile, line: 0 }));
@@ -466,6 +480,7 @@ function rvOnKey(e) {
   if (key === 'j' || e.key === 'ArrowDown') { if (items[i + 1]) rvSelect(items[i + 1].id); }
   else if (key === 'k' || e.key === 'ArrowUp') { if (i > 0) rvSelect(items[i - 1].id); }
   else if (key === 'a' && s?.status === 'pending') rvAct(s, 'accept');
+  else if (key === 'p' && s?.status === 'pending') rvAct(s, 'post');
   else if (key === 'd' && s?.status === 'pending') rvAct(s, 'dismiss');
   else if (key === 'e' && s && s.status !== 'dismissed' && s.status !== 'posted') rvAct(s, 'edit');
   else if (e.key === 'Enter' && s) {
@@ -492,11 +507,11 @@ function rvDrawMarkers(path, rows) {
   for (const { el, side, line } of rows) {
     const here = byKey.get(side + ':' + line);
     if (!here) continue;
-    here.sort((a, b) => (RV_SEV_RANK[a.ai?.severity] ?? 2) - (RV_SEV_RANK[b.ai?.severity] ?? 2));
+    here.sort((a, b) => RV_SEV_RANK[rvSev(a)] - RV_SEV_RANK[rvSev(b)]);
     const top = here[0];
     const badge = document.createElement('span');
-    badge.className = 'pr-ai-mark rv-sev-' + (top.ai?.severity || 'minor');
-    badge.title = 'AI suggestion (' + (top.ai?.severity || 'minor') + ', not posted): ' + top.body.slice(0, 160) +
+    badge.className = 'pr-ai-mark rv-sev-' + rvSev(top);
+    badge.title = 'AI suggestion (' + RV_SEV_LABEL[rvSev(top)] + ', not posted): ' + top.body.slice(0, 160) +
       (here.length > 1 ? ' (+' + (here.length - 1) + ' more)' : '');
     badge.innerHTML = RV_MARK_ICON;
     badge.addEventListener('click', ev => {

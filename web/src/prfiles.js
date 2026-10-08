@@ -547,13 +547,13 @@ function pfDraftHtml(c) {
 
 function pfAiHtml(s) {
   const ai = s.ai || {};
-  const sev = ai.severity || 'minor';
+  const sev = ['critical', 'high', 'medium', 'low'].includes(ai.severity) ? ai.severity : 'medium';
   const where = s.subjectType === 'file' ? 'whole file' : s.subjectType === 'summary' ? s.path : pfLines(s);
   const stale = !!ai.stale;
   const dis = stale ? ' disabled title="Made against an older PR head: re-check it in AI Review first"' : '';
   return '<div class="pf-box pf-ai' + (s.id === pfFocusId ? ' pf-focus' : '') + '" data-ai-id="' + s.id + '">' +
     '<div class="pf-box-head"><span class="pf-ai-badge">AI</span><b>Suggestion</b><span class="pf-when">' + esc(where) + '</span>' +
-      '<span class="rv-sev rv-sev-' + esc(sev) + '">' + esc(sev) + '</span>' +
+      '<span class="rv-sev rv-sev-' + esc(sev) + '">' + esc(sev[0].toUpperCase() + sev.slice(1)) + '</span>' +
       (ai.category ? '<span class="rv-cat">' + esc(ai.category) + '</span>' : '') +
       (stale ? '<span class="rv-anchor rv-anchor-file">stale</span>' : '') +
       '<span class="grow"></span><span class="pf-conf" title="Model confidence">' + Math.round((ai.confidence ?? 0) * 100) + '% confident</span></div>' +

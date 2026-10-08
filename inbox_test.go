@@ -296,7 +296,7 @@ func waitLaunch(t *testing.T, s *Server, target string, until func(map[string]an
 func TestLaunchReusesRunningChild(t *testing.T) {
 	var spawns int32
 	useLaunchHelper(t, "serve", &spawns)
-	s := inboxServer(t)
+	s := launchServer(t)
 	const target = "https://github.com/o/r/pull/7"
 
 	code, m := agentPostJSON(t, s, "/api/pr/launch", map[string]string{"target": target})
@@ -319,7 +319,7 @@ func TestLaunchReusesRunningChild(t *testing.T) {
 func TestLaunchReportsFailureAndRetries(t *testing.T) {
 	var spawns int32
 	useLaunchHelper(t, "fail", &spawns)
-	s := inboxServer(t)
+	s := launchServer(t)
 	const target = "https://github.com/o/r/pull/7"
 	agentPostJSON(t, s, "/api/pr/launch", map[string]string{"target": target})
 	st := waitLaunch(t, s, target, func(m map[string]any) bool { return m != nil && m["state"] == "failed" })
@@ -334,7 +334,7 @@ func TestLaunchReportsFailureAndRetries(t *testing.T) {
 func TestLaunchRefusesOwnPRAndBadTargets(t *testing.T) {
 	var spawns int32
 	useLaunchHelper(t, "serve", &spawns)
-	s := inboxServer(t)
+	s := launchServer(t)
 	s.pr = &prSession{target: PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 7, URL: "https://github.com/o/r/pull/7"}}
 	if _, m := agentPostJSON(t, s, "/api/pr/launch", map[string]string{"target": "https://github.com/o/r/pull/7"}); m["self"] != true || spawns != 0 {
 		t.Fatalf("launching the session's own PR = %v", m)
@@ -342,4 +342,20 @@ func TestLaunchRefusesOwnPRAndBadTargets(t *testing.T) {
 	if code, _ := agentPostJSON(t, s, "/api/pr/launch", map[string]string{"target": "https://example.com/x"}); code != http.StatusBadRequest {
 		t.Errorf("non-PR target = %d, want 400", code)
 	}
+}
+
+// launchServer is an inbox whose workspace is a clone of o/r, so its PRs
+// launch from the workspace itself.
+func launchServer(t *testing.T) *Server {
+	t.Helper()
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	s := inboxServer(t)
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://github.com/o/r.git"}} {
+		if out, err := exec.Command("git", append([]string{"-C", s.ix.Root()}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return s
 }

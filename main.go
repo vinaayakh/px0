@@ -162,6 +162,10 @@ func main() {
 		}
 		targetDur = time.Since(tStart)
 		root, initialFile, initialLine = r, f, l
+		if !isInbox && !gitDisabled {
+			// Saved, so this repository's PRs can be reviewed from anywhere (repos.go).
+			go rememberWorkspaceRepo(root)
+		}
 	}
 
 	tListen := time.Now()

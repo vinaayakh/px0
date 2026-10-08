@@ -43,7 +43,7 @@ The worktree snapshot taken around every harness run is the backstop. If a revie
 
 A single argv element is capped at 32 KB on Windows and 128 KB on Linux, far less than a large PR's diff, so the prompt passed on the command line is one short paragraph (`reviewPrompt`) pointing at `review.md` in the temp directory. `buildReviewDoc` writes, in order:
 
-1. The skill: `review.skillPath`, else `~/.px0/skills/review.md` (next to `settings.json`), else the built-in [`review_skill.md`](../../review_skill.md), embedded with `go:embed`. The built-in skill covers correctness, security, error handling, tests and API changes, asks for evidence on every claim, and prefers fewer, higher-confidence comments.
+1. The skill: `review.skillPath`, else `~/.px0/skills/review.md` (next to `settings.json`), else the built-in [`review_skill.md`](../../review_skill.md), embedded with `go:embed`. The built-in skill is a senior-architect review based on [vinaayakh/skills pr-review](https://github.com/vinaayakh/skills/tree/main/skills/pr-review): only the PR's changes and the code they affect, callers and tests read for blast radius, findings in priority order (correctness, contract breaks, security, unoptimized code, maintainability), each one verified by the input that triggers it, one finding per suggestion, and an empty result rather than padding.
 2. The optional focus note.
 3. PR title, number, URL, author, refs, head SHA and description.
 4. The changed files with their status (added, deleted, renamed from, binary).
@@ -55,7 +55,7 @@ A single argv element is capped at 32 KB on Windows and 128 KB on Linux, far les
 
 The harness prints one JSON object between `PX0-REVIEW-BEGIN` and `PX0-REVIEW-END`. `parseReviewOutput` collects every marker-delimited block plus the whole output, and tries them from the last one back, taking the first that decodes into the result shape. Trying from the end matters: some harnesses echo the prompt, and the echoed output format is itself a JSON object between the same markers. Inside a candidate, decoding starts at each `{` in turn, which skips code fences and prose.
 
-Parsing is lenient where models are sloppy: numbers may be strings (`"42"`, `"80%"`), a confidence above 1 is read as a percentage, a missing confidence is 0.5, severities are normalised (`critical` → `blocker`, `low` → `minor`, anything unknown → `minor`), and an approve verdict is recorded as `suggestedApprove` while the verdict that pre-fills the form stays `comment`. A suggestion with neither body nor code is skipped; everything else is kept.
+Parsing is lenient where models are sloppy: numbers may be strings (`"42"`, `"80%"`), a confidence above 1 is read as a percentage, a missing confidence is 0.5, severities are normalised onto the skill's scale, `critical`, `high`, `medium`, `low` (older names map across: `blocker` → `critical`, `major` → `high`, `minor` → `medium`, `nit` → `low`; anything unknown → `medium`; drafts saved with the older names are mapped when restored), and an approve verdict is recorded as `suggestedApprove` while the verdict that pre-fills the form stays `comment`. A suggestion with neither body nor code is skipped; everything else is kept, sorted by priority (`suggestionLess`): severity, then confidence, then file and line.
 
 ## 5. Anchoring
 

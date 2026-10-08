@@ -67,10 +67,10 @@ func TestParseReviewOutputLenientNumbers(t *testing.T) {
 func TestBuildSuggestions(t *testing.T) {
 	pd := parseUnifiedDiff(anchorFixtureDiff)
 	out := reviewOutput{Suggestions: []rawSuggestion{
-		{Path: "a.go", Line: 22, Quote: "b++", Severity: "nit", Body: "Name this."},
+		{Path: "a.go", Line: 22, Quote: "b++", Severity: "nit", Body: "Name this.", Confidence: ptrFlex(0.99)},
 		{Path: "a.go", Line: 4, Quote: "x := 2", Severity: "critical", Category: "Bug", Body: "Wrong constant.", Suggestion: "\tx := 1\n"},
 		{Path: "a.go", Line: 40, Quote: "gone", Severity: "major", Body: "Missing test."},
-		{Path: "elsewhere.go", Line: 3, Severity: "minor", Body: "Caller not updated."},
+		{Path: "elsewhere.go", Line: 3, Severity: "minor", Body: "Caller not updated.", Confidence: ptrFlex(0.9)},
 		{Path: "a.go", Line: 5, Quote: "return x", Body: "", Suggestion: ""},
 		{Path: "a.go", Line: 5, Quote: "return x", Severity: "whatever", Suggestion: "\treturn x + 0"},
 	}}
@@ -79,27 +79,30 @@ func TestBuildSuggestions(t *testing.T) {
 	if len(got) != 5 {
 		t.Fatalf("got %d suggestions, want 5 (the empty one is skipped): %+v", len(got), got)
 	}
-	// Sorted by path, then severity: a.go blocker, a.go major, a.go minor, a.go nit, elsewhere.go.
-	order := []string{"blocker", "major", "minor", "nit", "minor"}
+	// Sorted by priority across files: severity (older names mapped onto the
+	// skill's scale), then confidence, then file. A confident Low still comes
+	// last; a confident Medium in another file comes before a less sure one.
+	order := []string{"critical", "high", "medium", "medium", "low"}
+	paths := []string{"a.go", "a.go", "elsewhere.go", "a.go", "a.go"}
 	for i, c := range got {
-		if c.AI.Severity != order[i] {
-			t.Errorf("suggestion %d severity %q, want %q (%s:%d)", i, c.AI.Severity, order[i], c.Path, c.Line)
+		if c.AI.Severity != order[i] || c.Path != paths[i] {
+			t.Errorf("suggestion %d = %q %s:%d, want %q in %s", i, c.AI.Severity, c.Path, c.Line, order[i], paths[i])
 		}
 		if c.Origin != prOriginAI || c.Status != prStatusPending || c.RunID != 7 || c.Fingerprint == "" {
 			t.Errorf("suggestion %d not a pending AI draft: %+v", i, c)
 		}
 	}
 	if got[0].AI.Category != "bug" || got[0].AI.Suggestion != "\tx := 1" || got[0].AI.Anchor != anchorAnchored {
-		t.Errorf("blocker: %+v", got[0].AI)
+		t.Errorf("critical: %+v", got[0].AI)
 	}
 	if got[1].SubjectType != "file" || !strings.HasPrefix(got[1].Body, "**Line 40:** ") || got[1].AI.Anchor != anchorFile {
 		t.Errorf("unplaceable line must become a file comment with the line in its body: %+v", got[1])
 	}
-	if got[2].Body != "Suggested change:" {
-		t.Errorf("a suggestion with only code gets a placeholder body, got %q", got[2].Body)
+	if got[3].Body != "Suggested change:" {
+		t.Errorf("a suggestion with only code gets a placeholder body, got %q", got[3].Body)
 	}
-	if got[4].SubjectType != "summary" || got[4].Path != "elsewhere.go" {
-		t.Errorf("file outside the PR must become a summary note: %+v", got[4])
+	if got[2].SubjectType != "summary" || got[2].Path != "elsewhere.go" {
+		t.Errorf("file outside the PR must become a summary note: %+v", got[2])
 	}
 	if counts[anchorAnchored] != 3 || counts[anchorFile] != 1 || counts[anchorSummary] != 1 {
 		t.Errorf("counts = %v", counts)
@@ -446,5 +449,39 @@ func TestReviewRunEndToEnd(t *testing.T) {
 	}
 	if s.pr.comments[0].Body != "kept" {
 		t.Error("accepted suggestions from an earlier run must survive a re-run")
+	}
+}
+
+func ptrFlex(f float64) *flexNum { n := flexNum(f); return &n }
+
+func TestNormSeverity(t *testing.T) {
+	for in, want := range map[string]string{
+		"Critical": "critical", "HIGH": "high", "medium": "medium", " low ": "low",
+		"blocker": "critical", "major": "high", "minor": "medium", "nit": "low",
+		"error": "high", "warning": "medium", "info": "low", "": "medium", "whatever": "medium",
+	} {
+		if got := normSeverity(in); got != want {
+			t.Errorf("normSeverity(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Drafts saved by an older px0 carry blocker/major/minor/nit; restored, they
+// read on the skill's scale.
+func TestRestoredDraftsUseNewSeverities(t *testing.T) {
+	isolateSettings(t)
+	ix := NewIndex(t.TempDir())
+	ix.Build()
+	s := NewServer(ix, nil)
+	s.session.Update(func(ws *WorkspaceSession) {
+		ws.Drafts = []prComment{
+			{ID: 3, Path: "a.go", Line: 1, Body: "x", Origin: prOriginAI, Status: prStatusAccepted, AI: &aiSuggestion{Severity: "blocker"}},
+			{ID: 4, Path: "a.go", Line: 2, Body: "y", Origin: prOriginAI, Status: prStatusAccepted, AI: &aiSuggestion{Severity: "nit"}},
+		}
+	})
+	p := &prSession{review: &reviewState{}}
+	s.SetPR(p)
+	if len(p.comments) != 2 || p.comments[0].AI.Severity != "critical" || p.comments[1].AI.Severity != "low" {
+		t.Errorf("restored = %+v %+v", p.comments[0].AI, p.comments[1].AI)
 	}
 }

@@ -424,8 +424,8 @@
           <button class="opt" data-rv-filter="all" type="button" title="Every suggestion, including added, posted and dismissed">All</button>
         </span>
         <span class="grow"></span>
-        <span class="rv-keys"><b>J</b>/<b>K</b> move · <b>A</b> add to review · <b>E</b> edit · <b>D</b> dismiss · <b>Enter</b> show in Files changed</span>
-        <button class="opt" id="rv-dismiss-nits" type="button" title="Dismiss every pending nit">Dismiss nits</button>
+        <span class="rv-keys"><b>J</b>/<b>K</b> move · <b>A</b> add to review · <b>P</b> comment now · <b>E</b> edit · <b>D</b> dismiss · <b>Enter</b> show in Files changed</span>
+        <button class="opt" id="rv-dismiss-low" type="button" title="Dismiss every pending Low suggestion">Dismiss Low</button>
       </div>
       <div class="rv-list" id="rv-list" tabindex="0">
         <div class="hint">Run an AI review to get suggested comments.</div>
@@ -574,6 +574,25 @@
 <!-- SECTION: Keyboard Shortcuts Cheat Sheet Overlay (?) -->
 <div id="helpsheet" hidden></div>
 <div id="vim-helpsheet" hidden></div>
+
+<!-- SECTION: Local repositories (repos.js): the clones PRs are reviewed from -->
+<div id="repos-modal" class="modal-overlay" hidden>
+  <div class="repos-dialog" role="dialog" aria-modal="true" aria-labelledby="repos-title">
+    <header class="repos-header">
+      <h2 id="repos-title">Local repositories</h2>
+      <button id="repos-close" class="mini" type="button" title="Close (Esc)" aria-label="Close">&#10005;</button>
+    </header>
+    <p id="repos-need" class="repos-need" hidden></p>
+    <p class="repos-help">Pull requests are reviewed from your own clone of their repository. Add the clones you review from; the files are not changed or moved. Repositories you open px0 in are added on their own.</p>
+    <div id="repos-list" class="repos-list"></div>
+    <form id="repos-add" class="repos-add" autocomplete="off">
+      <input id="repos-path" type="text" spellcheck="false" placeholder="Path to a local clone, e.g. D:\code\my-repo or ~/code/my-repo" aria-label="Path to a local clone">
+      <button id="repos-browse" class="opt" type="button" title="Choose the folder in a system dialog">Browse…</button>
+      <button id="repos-add-btn" class="opt primary" type="submit">Add</button>
+    </form>
+    <div id="repos-error" class="repos-error" hidden></div>
+  </div>
+</div>
 
 <!-- SECTION: Settings Modal (Cmd+, / Ctrl+,) -->
 <div id="settings-modal" class="modal-overlay" hidden>

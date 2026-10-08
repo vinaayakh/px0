@@ -9,6 +9,7 @@
 import { $, S, esc, api, apiPostJson } from './state.js';
 import { showToast } from './ui.js';
 import { openSettings } from './settings.js';
+import { initRepos, openRepos, savedRepos } from './repos.js';
 
 const IB_SECTIONS = [
   { id: 'all', title: 'All' },
@@ -17,6 +18,7 @@ const IB_SECTIONS = [
 ];
 const IB_POLL_MS = 5 * 60 * 1000;
 const IB_OTHER = '\u0000other'; // the picker's "Other repository…" entry
+const IB_MANAGE = '\u0000manage'; // the picker's "Local repositories…" entry
 
 let ibOpen = false;
 let ibTimer = 0;
@@ -30,6 +32,7 @@ let ibSection = 'all';             // chip shown
 let ibRepo = '';                   // owner/name shown; '' is the workspace's
 let ibRepos = null;                // picker choices, once loaded
 let ibDefaultRepo = '';            // the workspace's repository
+let ibLocal = [];                  // owner/name of each saved local clone (repos.js)
 
 // The filter and sort are a per-viewer convenience: remembered in this
 // browser if it allows, fine to lose.
@@ -41,6 +44,7 @@ function ibRecall(key) {
 }
 
 export function initInbox() {
+  initRepos({ onChange: () => ibLoadRepos(false) });
   $('#btn-inbox')?.addEventListener('click', () => { if (!ibOpen) showInbox(); });
   for (const sel of ['#btn-files', '#btn-changed']) $(sel)?.addEventListener('click', hideInbox);
   $('#inbox-refresh')?.addEventListener('click', () => { ibLoadRepos(true); ibLoad(true); });
@@ -151,6 +155,7 @@ async function ibLoad(force) {
 }
 
 async function ibLoadRepos(force) {
+  const local = savedRepos();
   try {
     const r = await api('/api/inbox/repos', force ? { refresh: 1 } : {});
     ibRepos = r.repos || [];
@@ -158,6 +163,10 @@ async function ibLoadRepos(force) {
   } catch {
     ibRepos = ibRepos || []; // the picker still offers the shown one and Other
   }
+  const seen = new Set();
+  ibLocal = (await local).filter(r => !r.missing).map(r => r.repo)
+    .filter(r => !seen.has(r.toLowerCase()) && seen.add(r.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   ibRenderRepos();
 }
 
@@ -170,17 +179,29 @@ function ibRenderRepos() {
   const sel = $('#inbox-repo');
   if (!sel) return;
   const shown = ibShownRepo();
-  const list = [...(ibRepos || [])];
-  if (shown && !list.some(r => r.toLowerCase() === shown.toLowerCase())) list.unshift(shown);
+  const lc = r => r.toLowerCase();
+  const isLocal = new Set(ibLocal.map(lc));
+  // Local clones first: their PRs can be reviewed. Then the rest of GitHub.
+  const local = [...ibLocal];
+  const remote = (ibRepos || []).filter(r => !isLocal.has(lc(r)));
+  if (shown && !local.some(r => lc(r) === lc(shown)) && !remote.some(r => lc(r) === lc(shown))) remote.unshift(shown);
+  const opt = r => '<option value="' + esc(r) + '"' + (lc(r) === lc(shown) ? ' selected' : '') + '>' +
+    esc(r) + (r === ibDefaultRepo ? ' (this workspace)' : '') + '</option>';
   let html = shown ? '' : '<option value="" selected>Pick a repository…</option>';
-  html += list.map(r => '<option value="' + esc(r) + '"' + (r.toLowerCase() === shown.toLowerCase() ? ' selected' : '') + '>' +
-    esc(r) + (r === ibDefaultRepo ? ' (this workspace)' : '') + '</option>').join('');
+  if (local.length) html += '<optgroup label="Local repositories">' + local.map(opt).join('') + '</optgroup>';
+  if (remote.length) html += '<optgroup label="' + (local.length ? 'Other repositories on GitHub' : 'GitHub') + '">' + remote.map(opt).join('') + '</optgroup>';
   html += '<option value="' + IB_OTHER + '">Other repository…</option>';
+  html += '<option value="' + IB_MANAGE + '">Manage local repositories…</option>';
   sel.innerHTML = html;
   sel.title = shown ? 'Repository: ' + shown : 'Pick a repository';
 }
 
 function ibPickRepo(value) {
+  if (value === IB_MANAGE) {
+    ibRenderRepos(); // put the picker back on the shown repository
+    openRepos();
+    return;
+  }
   if (value === IB_OTHER) {
     const typed = (window.prompt('Show pull requests of which GitHub repository? (owner/name or URL)', ibShownRepo()) || '').trim();
     const m = /^(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(typed);
@@ -320,7 +341,21 @@ export async function openPullRequest(url) {
   ibOpening.add(url);
   ibRender();
   try {
-    const r = await apiPostJson('/api/pr/launch', { target: url });
+    let r;
+    for (;;) {
+      try {
+        r = await apiPostJson('/api/pr/launch', { target: url });
+        break;
+      } catch (e) {
+        // No local clone of the PR's repository yet: ask for one, then retry.
+        const needRepo = e.body?.needsRepo;
+        if (!needRepo) throw e;
+        if (w) try { w.document.body.textContent = 'Waiting for a local clone of ' + needRepo + ' (add it in px0)…'; } catch {}
+        const added = await openRepos(needRepo);
+        if (!added) { w?.close(); return; }
+        if (w) try { w.document.body.textContent = 'Preparing ' + key + ' in px0…'; } catch {}
+      }
+    }
     if (r.self) { w?.close(); showToast('✓', r.error); return; }
     let lp = r.launch;
     const deadline = Date.now() + 120000;

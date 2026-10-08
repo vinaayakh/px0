@@ -514,7 +514,27 @@ func (s *Server) handleLaunchPR(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	lp, already, err := launchPR(target, s.ix.Root())
+	// The review checks the PR out of a local clone of its repository: this
+	// workspace when it is one, else a saved one (repos.go). Without either,
+	// the page asks for the clone and tries again.
+	dir := s.ix.Root()
+	if _, t, err := ParsePRURL(target); err == nil {
+		if _, _, ok := cloneOf(dir, t.Owner, t.Repo); !ok {
+			top, _, ok := findLocalClone(t.Owner, t.Repo)
+			if !ok {
+				repo := t.Owner + "/" + t.Repo
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]any{
+					"error":     "no local clone of " + repo + " is saved; add it under Local repositories",
+					"needsRepo": repo,
+				})
+				return
+			}
+			dir = top
+		}
+	}
+	lp, already, err := launchPR(target, dir)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return

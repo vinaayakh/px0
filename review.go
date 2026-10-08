@@ -40,7 +40,7 @@ const (
 
 // aiSuggestion is what an AI-origin draft carries beyond a human one.
 type aiSuggestion struct {
-	Severity     string  `json:"severity"` // blocker, major, minor, nit
+	Severity     string  `json:"severity"` // critical, high, medium, low
 	Category     string  `json:"category,omitempty"`
 	Confidence   float64 `json:"confidence"`
 	Suggestion   string  `json:"suggestion,omitempty"` // replacement code for the anchored line(s)
@@ -134,10 +134,10 @@ When you are done, print one JSON object between the two marker lines below, and
       "startLine": 40,
       "side": "RIGHT",
       "quote": "the exact text of line 42, copied from the diff",
-      "severity": "blocker | major | minor | nit",
-      "category": "bug | security | error-handling | test | api | perf | style",
-      "body": "Markdown comment, written as it should be posted. Say what is wrong, why, and what to do.",
-      "suggestion": "optional replacement code for lines startLine..line (or just line)",
+      "severity": "critical | high | medium | low",
+      "category": "correctness | contract | security | performance | maintainability",
+      "body": "Markdown comment, written as it should be posted: what breaks, and under what conditions.",
+      "suggestion": "optional replacement code for exactly lines startLine..line (or just line)",
       "confidence": 0.8
     }
   ]
@@ -149,6 +149,7 @@ Rules:
 - "line" is the line number in the new version of the file for side "RIGHT" (added or unchanged lines), or in the old version for side "LEFT" (deleted lines). Use the numbers from the diff hunks.
 - "quote" must be the exact text of that line; it is used to check the line number. Leave out "startLine" for a single-line comment.
 - "confidence" is between 0 and 1: how sure you are the comment is correct and worth posting.
+- One finding per entry in "suggestions": never put two issues in one comment.
 - An empty "suggestions" list is a valid result.
 `
 
@@ -357,24 +358,28 @@ func decodeReviewJSON(s string) (reviewOutput, bool) {
 	return reviewOutput{}, false
 }
 
-var severityRank = map[string]int{"blocker": 0, "major": 1, "minor": 2, "nit": 3}
+// severityRank orders suggestions by priority, most severe first. The
+// scale is the review skill's: Critical, High, Medium, Low.
+var severityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+// normSeverity maps what a model or an older px0 wrote onto the scale;
+// anything unknown is medium.
 func normSeverity(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "critical", "high", "error":
-		return "blocker"
-	case "medium", "warning":
-		return "major"
-	case "low", "info", "suggestion":
-		return "minor"
-	case "nitpick", "trivial":
-		return "nit"
+	case "blocker", "fatal":
+		return "critical"
+	case "major", "error":
+		return "high"
+	case "minor", "warning", "moderate":
+		return "medium"
+	case "nit", "nitpick", "trivial", "info", "suggestion":
+		return "low"
 	}
 	if _, ok := severityRank[s]; ok {
 		return s
 	}
-	return "minor"
+	return "medium"
 }
 
 func normConfidence(c *flexNum) float64 {
@@ -402,8 +407,9 @@ func suggestionFingerprint(path, quote, body string) string {
 }
 
 // buildSuggestions anchors each raw suggestion and turns it into a pending
-// AI draft, sorted by file then severity. None is dropped: a file-level or
-// summary result keeps the reported line in the body.
+// AI draft, one per finding, sorted by priority (suggestionLess). None is
+// dropped: a file-level or summary result keeps the reported line in the
+// body.
 func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() int64) ([]prComment, map[string]int) {
 	counts := map[string]int{}
 	var res []prComment
@@ -441,17 +447,23 @@ func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() i
 		c.applyAnchor(a)
 		res = append(res, c)
 	}
-	sort.SliceStable(res, func(i, j int) bool {
-		if res[i].Path != res[j].Path {
-			return res[i].Path < res[j].Path
-		}
-		ri, rj := severityRank[res[i].AI.Severity], severityRank[res[j].AI.Severity]
-		if ri != rj {
-			return ri < rj
-		}
-		return res[i].Line < res[j].Line
-	})
+	sort.SliceStable(res, func(i, j int) bool { return suggestionLess(res[i], res[j]) })
 	return res, counts
+}
+
+// suggestionLess orders AI suggestions by priority: most severe first, then
+// the more confident, then by file and line.
+func suggestionLess(a, b prComment) bool {
+	if ra, rb := severityRank[a.AI.Severity], severityRank[b.AI.Severity]; ra != rb {
+		return ra < rb
+	}
+	if a.AI.Confidence != b.AI.Confidence {
+		return a.AI.Confidence > b.AI.Confidence
+	}
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	return a.Line < b.Line
 }
 
 // applyAnchor places an AI suggestion where the anchoring put it. A
