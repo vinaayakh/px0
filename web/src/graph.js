@@ -1,5 +1,5 @@
 // web/src/graph.js
-// The Graph tab (git://graph): every branch, remote branch and tag as a
+// The Graph tab (git://graph): every local branch, origin branch and tag as a
 // commit graph, with a branch list sorted into health categories beside it.
 // Lanes are laid out on the server (graph.go) and arrive with each 2,000-row
 // page; this module only draws the rows in view -- about 60 DOM rows and one

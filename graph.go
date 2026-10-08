@@ -215,10 +215,15 @@ func (r graphRow) maxLane() int {
 
 // ---------------------------------------------------------------- git
 
-// graphRevs are the tips the graph starts from: every branch, remote branch
-// and tag, and HEAD (a PR worktree is often detached). Stashes are left out;
-// their internal commits would show as stray merges.
-var graphRevs = []string{"--branches", "--remotes", "--tags", "HEAD"}
+// graphRevs are the tips the graph starts from: every local branch, origin's
+// branches, every tag, and HEAD (a PR worktree is often detached). Other
+// remotes (upstreams, forks) are left out so the graph shows this clone and
+// its origin only. Stashes are left out too; their internal commits would show
+// as stray merges.
+var graphRevs = []string{"--branches", "--remotes=origin", "--tags", "HEAD"}
+
+// graphRefPatterns are the for-each-ref patterns matching graphRevs.
+var graphRefPatterns = []string{"refs/heads", "refs/remotes/origin", "refs/tags"}
 
 // parseGraphLine reads one `git log --format=%H%x1f%P%x1f%an%x1f%ct%x1f%s` line.
 func parseGraphLine(line string) (graphCommit, bool) {
@@ -247,8 +252,9 @@ type graphRefInfo struct {
 }
 
 func readRefs(root string) (graphRefInfo, error) {
-	out, err := exec.Command("git", "-C", root, "for-each-ref",
-		"--format=%(objectname)%00%(*objectname)%00%(refname)%00%(HEAD)%00%(symref)").Output()
+	args := append([]string{"-C", root, "for-each-ref",
+		"--format=%(objectname)%00%(*objectname)%00%(refname)%00%(HEAD)%00%(symref)"}, graphRefPatterns...)
+	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return graphRefInfo{}, err
 	}

@@ -108,6 +108,46 @@ func graphTestRepo(t *testing.T) graphRepo {
 	return g
 }
 
+// TestGraphOriginOnly: a branch of another remote (an upstream or a fork) is
+// left out of the branch list, the ref pills and the graph's history.
+func TestGraphOriginOnly(t *testing.T) {
+	g := graphTestRepo(t)
+	tree := strings.TrimSpace(gitTestRun(t, g.root, "rev-parse", "main^{tree}"))
+	fork := strings.TrimSpace(gitTestRun(t, g.root, "-c", "user.name=U", "-c", "user.email=u@u",
+		"commit-tree", tree, "-p", g.sha["c1"], "-m", "upstream only"))
+	gitTestRun(t, g.root, "update-ref", "refs/remotes/upstream/feature", fork)
+
+	branches, err := graphBranches(g.root, "origin/main", 30, time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range branches {
+		if b.Remote == "upstream" {
+			t.Errorf("branch list has %s", b.Name)
+		}
+	}
+	ri, err := readRefs(g.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ri.branches["upstream/feature"]; ok || ri.refs[fork] != nil {
+		t.Error("readRefs has upstream/feature")
+	}
+	s, err := graphSessionFor(g.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+	s.mu.Lock()
+	s.fill(1000)
+	_, inGraph := s.index[fork]
+	_, hasMain := s.index[g.sha["M2"]]
+	s.mu.Unlock()
+	if inGraph || !hasMain {
+		t.Errorf("graph has upstream commit: %v, has main's M2: %v", inGraph, hasMain)
+	}
+}
+
 func TestGraphBranchCategories(t *testing.T) {
 	g := graphTestRepo(t)
 	def := graphDefaultBranch(g.root, settings{})

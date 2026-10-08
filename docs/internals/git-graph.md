@@ -1,6 +1,6 @@
 # Git Graph and Branch Focus
 
-The **Graph** tab (`git://graph`) draws the commit graph of every local and remote branch, every tag and HEAD, with a branch list beside it that sorts each branch into a health category. Clicking a branch, a ref pill or any lane focuses that branch's life: its own commits, the commit it forked from and the merges that brought it in stay bright, and everything else fades to 35%.
+The **Graph** tab (`git://graph`) draws the commit graph of every local branch, every branch of `origin`, every tag and HEAD, with a branch list beside it that sorts each branch into a health category. Clicking a branch, a ref pill or any lane focuses that branch's life: its own commits, the commit it forked from and the merges that brought it in stay bright, and everything else fades to 35%.
 
 Source: [`graph.go`](../../graph.go) (lane layout, streaming, paging, segment focus), [`graph_branches.go`](../../graph_branches.go) (default branch, categories, ref focus), [`web/src/graph.js`](../../web/src/graph.js) (virtualized drawing, branch list, focus).
 
@@ -8,9 +8,9 @@ The graph only reads. It never checks out, rebases or deletes anything.
 
 ## 1. Reading History
 
-`git log --topo-order --branches --remotes --tags HEAD` is streamed with `%H %P %an %ct %s` separated by `%x1f`, one commit per line, and laid out as it is read. Stashes are left out on purpose: their internal commits would show as stray merges. HEAD is included because a PR worktree is often detached.
+`git log --topo-order --branches --remotes=origin --tags HEAD` is streamed with `%H %P %an %ct %s` separated by `%x1f`, one commit per line, and laid out as it is read. Stashes are left out on purpose: their internal commits would show as stray merges. HEAD is included because a PR worktree is often detached. Other remotes (an `upstream`, forks added for review) are left out, so the graph shows the checked-out clone and its origin only.
 
-Refs come from one `git for-each-ref` call (`readRefs`), which also yields the checked-out branch (`%(HEAD)`), where `origin/HEAD` points (`%(symref)`) and, peeled, the commit behind every annotated tag. Only a detached HEAD costs a second call. On Windows with a virus scanner every git spawn costs about 70 ms, so the graph avoids them wherever one call can answer.
+Refs come from one `git for-each-ref refs/heads refs/remotes/origin refs/tags` call (`readRefs`), which also yields the checked-out branch (`%(HEAD)`), where `origin/HEAD` points (`%(symref)`) and, peeled, the commit behind every annotated tag. Only a detached HEAD costs a second call. On Windows with a virus scanner every git spawn costs about 70 ms, so the graph avoids them wherever one call can answer.
 
 ## 2. Lane Layout
 
@@ -45,7 +45,7 @@ Without a commit-graph file, git must walk the whole history before it prints th
 
 ## 4. Branch Categories
 
-`graphBranches` lists `refs/heads` and `refs/remotes` in one `for-each-ref` call that also returns ahead and behind counts against the default branch (`%(ahead-behind:<default>)`, git 2.41+; older git counts per branch with `rev-list --left-right --count`), plus one `for-each-ref --merged=<default>` call. Each branch gets the first category that applies:
+`graphBranches` lists `refs/heads` and `refs/remotes/origin` in one `for-each-ref` call that also returns ahead and behind counts against the default branch (`%(ahead-behind:<default>)`, git 2.41+; older git counts per branch with `rev-list --left-right --count`), plus one `for-each-ref --merged=<default>` call. Each branch gets the first category that applies:
 
 | Category | Rule |
 | --- | --- |

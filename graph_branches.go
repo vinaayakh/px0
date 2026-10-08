@@ -89,24 +89,25 @@ func remoteOf(name string, remotes []string) string {
 	return best
 }
 
-// graphBranches lists local and remote branches with their category.
+// graphBranches lists local branches and origin's branches with their
+// category. Other remotes (upstreams, forks) are left out, as in the graph.
 // squashLookup, when set, asks the forge which of the given branch names had
 // a PR merged, and returns name -> PR URL.
 func graphBranches(root, def string, staleDays int, now time.Time, squashLookup func([]string) map[string]string) ([]graphBranch, error) {
 	fields := "%(refname)%00%(objectname)%00%(committerdate:unix)%00%(authorname)%00%(upstream:track)%00%(symref)%00%(HEAD)"
 	withAB := def != ""
-	lines, err := gitLines(root, "for-each-ref", "--format="+fields+"%00%(ahead-behind:"+def+")", "refs/heads", "refs/remotes")
+	lines, err := gitLines(root, "for-each-ref", "--format="+fields+"%00%(ahead-behind:"+def+")", "refs/heads", "refs/remotes/origin")
 	if err != nil || !withAB {
 		// Older git has no %(ahead-behind); counts are then taken per branch.
 		withAB = false
-		if lines, err = gitLines(root, "for-each-ref", "--format="+fields, "refs/heads", "refs/remotes"); err != nil {
+		if lines, err = gitLines(root, "for-each-ref", "--format="+fields, "refs/heads", "refs/remotes/origin"); err != nil {
 			return nil, err
 		}
 	}
 	merged := map[string]bool{}
 	var defSHA string
 	if def != "" {
-		m, _ := gitLines(root, "for-each-ref", "--merged="+def, "--format=%(refname)", "refs/heads", "refs/remotes")
+		m, _ := gitLines(root, "for-each-ref", "--merged="+def, "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 		for _, r := range m {
 			merged[r] = true
 		}
