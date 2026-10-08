@@ -17,8 +17,12 @@ const IB_SECTIONS = [
   { id: 'mine', title: 'Mine' },
 ];
 const IB_POLL_MS = 5 * 60 * 1000;
-const IB_OTHER = '\u0000other'; // the picker's "Other repository…" entry
-const IB_MANAGE = '\u0000manage'; // the picker's "Local repositories…" entry
+// The picker's own entries. A colon cannot appear in owner/name, so these
+// never collide with a repository. (Not NUL: HTML parsing turns a NUL in an
+// attribute into U+FFFD, and the value read back would never match.)
+const IB_OTHER = ':other';   // "Other repository…"
+const IB_MANAGE = ':manage'; // "Manage local repositories…"
+const IB_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 let ibOpen = false;
 let ibTimer = 0;
@@ -48,9 +52,11 @@ export function initInbox() {
   $('#btn-inbox')?.addEventListener('click', () => { if (!ibOpen) showInbox(); });
   for (const sel of ['#btn-files', '#btn-changed']) $(sel)?.addEventListener('click', hideInbox);
   $('#inbox-refresh')?.addEventListener('click', () => { ibLoadRepos(true); ibLoad(true); });
+  $('#inbox-manage-repos')?.addEventListener('click', () => openRepos());
   ibSort = ibRecall('sort');
   if (ibSort === 'repo') ibSort = ''; // every row is the same repository now
   ibRepo = ibRecall('repo');
+  if (ibRepo && !IB_REPO_RE.test(ibRepo)) { ibRepo = ''; ibRemember('repo', ''); } // a picker entry saved by mistake
   if (IB_SECTIONS.some(s => s.id === ibRecall('section'))) ibSection = ibRecall('section');
   const filterEl = $('#inbox-filter'), sortEl = $('#inbox-sort');
   if (sortEl) {
@@ -212,7 +218,7 @@ function ibPickRepo(value) {
     }
     value = m[1];
   }
-  if (!value) { ibRenderRepos(); return; }
+  if (!value || !IB_REPO_RE.test(value)) { ibRenderRepos(); return; }
   ibRepo = value === ibDefaultRepo ? '' : value;
   ibRemember('repo', ibRepo);
   ibData = {};
