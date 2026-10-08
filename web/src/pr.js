@@ -153,6 +153,7 @@ export function nudgeGitHubToken() {
 function wireBarButtons() {
   $('#pr-batch-apply')?.addEventListener('click', batchApplyComments);
   $('#pr-discard-drafts')?.addEventListener('click', discardAllDrafts);
+  $('#pr-end-review')?.addEventListener('click', endReview);
   $('#pr-submit-comment')?.addEventListener('click', () => submitReview('COMMENT'));
   $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
   $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
@@ -160,6 +161,48 @@ function wireBarButtons() {
 }
 
 const BATCH_LABEL = 'Fix locally with AI';
+
+// Ends the review (prcleanup.go): the server removes the checkout, its refs
+// and its session file, then stops. Anything that would be lost -- drafts,
+// uncommitted edits, unpushed commits -- is named and confirmed first.
+async function endReview() {
+  const btn = $('#pr-end-review');
+  const end = force => apiPostJson('/api/pr/end', { force });
+  if (btn) btn.disabled = true;
+  try {
+    let r;
+    try {
+      r = await end(false);
+    } catch (e) {
+      const st = e.body?.state;
+      if (!e.body?.needsConfirm || !st) throw e;
+      const lost = [];
+      if (st.drafts) lost.push(st.drafts + (st.drafts === 1 ? ' draft comment (not submitted)' : ' draft comments (not submitted)'));
+      if (st.dirty) lost.push('uncommitted edits in the checkout');
+      if (st.unpushed) lost.push(st.unpushed + (st.unpushed === 1 ? ' commit' : ' commits') + ' not pushed to the PR');
+      if (!window.confirm('Ending the review deletes its checkout. These will be lost:\n\n- ' + lost.join('\n- ') + '\n\nEnd the review anyway?')) return;
+      r = await end(true);
+    }
+    showReviewEnded(r.worktree);
+  } catch (e) {
+    showToast('!', e.message || 'Could not end the review');
+  } finally {
+    if (btn && btn.isConnected) btn.disabled = false;
+  }
+}
+
+// The session is gone with the review: replace the page with a note, and
+// stop everything that would keep calling the server.
+function showReviewEnded(worktree) {
+  emit('session:ended');
+  const n = meta?.number ? '#' + meta.number : '';
+  document.title = 'Review ended - px0';
+  document.body.className = 'pr-ended-page';
+  document.body.innerHTML =
+    '<div class="pr-ended"><h1>Review of ' + esc(n) + ' ended</h1>' +
+    '<p>The checkout' + (worktree ? ' at <code>' + esc(worktree) + '</code>' : '') + ' and the refs px0 fetched for it were removed, and this PR session has stopped.</p>' +
+    '<p>You can close this tab.' + (meta?.url ? ' The PR is still on <a href="' + esc(meta.url) + '" target="_blank" rel="noopener">GitHub</a>.' : '') + '</p></div>';
+}
 
 // Drops every draft at once (pr.go): the reviewer's own are deleted and
 // accepted AI suggestions go back to dismissed, where AI Review can restore

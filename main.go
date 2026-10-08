@@ -120,6 +120,18 @@ func main() {
 		fatal(fmt.Errorf("px0: git is required for PR review; remove -no-git"))
 	}
 
+	// Remove what earlier reviews left behind when their px0 was killed or
+	// crashed before the review ended (prcleanup.go).
+	sweepRepo := ""
+	if !gitDisabled {
+		if info := gitProbe("."); info.ok {
+			sweepRepo = info.toplevel
+		}
+	}
+	if gone := sweepStalePRCheckouts(os.TempDir(), sweepRepo, processAlive); len(gone) > 0 {
+		uiBullet(fmt.Sprintf("removed %d leftover PR review checkout(s)", len(gone)), os.Stdout)
+	}
+
 	var pr *prSession
 	var root, initialFile string
 	var initialLine int
@@ -279,11 +291,26 @@ func main() {
 	interrupted := false
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	// End review (prcleanup.go) shuts down the same way Ctrl-C does, so the
+	// checkout is removed below, but exits normally.
+	ended := make(chan struct{}, 1)
+	if pr != nil {
+		pxSrv.SetOnEnd(func() {
+			select {
+			case ended <- struct{}{}:
+			default:
+			}
+		})
+	}
 	go func() {
-		<-stop
-		interrupted = true
-		fmt.Print("\r")
-		uiStatus("info", "px0 stopped", "", 0, os.Stderr)
+		select {
+		case <-stop:
+			interrupted = true
+			fmt.Print("\r")
+			uiStatus("info", "px0 stopped", "", 0, os.Stderr)
+		case <-ended:
+			uiStatus("ok", fmt.Sprintf("review of PR #%d ended; removing its checkout", pr.meta.Number), "", 0, os.Stdout)
+		}
 		go func() {
 			<-stop // Second interrupt forces immediate exit
 			os.Exit(130)
@@ -298,6 +325,9 @@ func main() {
 	agent.Close()
 	pxSrv.CloseThreads()
 	pr.Close()
+	if pr != nil {
+		uiStatus("ok", "removed the PR checkout "+pr.Root(), "", 0, os.Stdout)
+	}
 	if inboxDir != "" {
 		os.RemoveAll(inboxDir) // os.Exit below skips the deferred removal
 	}

@@ -63,6 +63,7 @@ type Server struct {
 	ix        *Index
 	lsp       *lspManager
 	agent     *agentManager  // nil unless main wires editing for this session
+	onEnd     func()         // ends a PR review session (prcleanup.go); set by main
 	threads   *threadManager // nil unless editing is wired: threads run on the same harness
 	pr        *prSession     // nil unless main launched this process as `px0 pr ...`
 	diffBase  string         // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode
@@ -185,6 +186,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/files"), s.handlePRFiles)
 	s.mux.HandleFunc(s.routePath("/api/markdown/render"), s.handleMarkdownRender)
 	s.mux.HandleFunc(s.routePath("/api/pr/submit"), s.handlePRSubmit)
+	s.mux.HandleFunc(s.routePath("/api/pr/end"), s.handlePREnd)
 	s.mux.HandleFunc(s.routePath("/api/pr/launch"), s.handleLaunchPR)
 	s.mux.HandleFunc(s.routePath("/api/pr/existing-comments"), s.handlePRExistingComments)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/issue"), s.handlePRIssueCommentPost)
@@ -467,6 +469,15 @@ func (s *Server) SetPR(p *prSession) {
 		}
 		if s.gitWatcher != nil {
 			s.gitWatcher.Trigger()
+		}
+		// The session file is keyed by the checkout's random path, so it is
+		// only ever read by this review: it goes when the review ends. A
+		// file keyed by -base-path is shared, and stays.
+		if s.session != nil && (s.basePath == "" || s.basePath == "/") {
+			p.mu.Lock()
+			p.sessionFile = s.session.path
+			p.mu.Unlock()
+			p.writeMarker()
 		}
 		if s.session != nil {
 			p.mu.Lock()

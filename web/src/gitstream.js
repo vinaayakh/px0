@@ -5,10 +5,11 @@ import { syncDiffView } from './diff.js';
 import { render } from './renderer.js';
 import { updateStatus, updateMetricsDisplay } from './status.js';
 import { updateGitPanel } from './gitpanel.js';
-import { emit } from './bus.js';
+import { emit, on } from './bus.js';
 
 let eventSource = null;
 let reconnectTimer = null;
+let streamEnded = false; // the session stopped (a PR review ended): never reconnect
 let lastSig = '';
 let refreshing = null;
 let lastRefreshAt = 0;
@@ -18,6 +19,7 @@ let lastRefreshAt = 0;
 const REFRESH_COOLDOWN_MS = 1500;
 
 export function initGitStream() {
+  on('session:ended', () => { streamEnded = true; disconnect(); });
   connect();
 
   // Instant refresh when user focuses the browser window
@@ -42,7 +44,7 @@ export function initGitStream() {
 }
 
 export function triggerRefresh() {
-  if (!S.meta?.git) return Promise.resolve();
+  if (streamEnded || !S.meta?.git) return Promise.resolve();
   if (refreshing) return refreshing;
   if (Date.now() - lastRefreshAt < REFRESH_COOLDOWN_MS) return Promise.resolve();
   refreshing = (async () => {
@@ -60,6 +62,7 @@ export function triggerRefresh() {
 }
 
 function connect() {
+  if (streamEnded) return;
   if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);

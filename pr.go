@@ -21,8 +21,9 @@ import (
 // with its target branch instead of HEAD, and letting the reviewer leave draft
 // comments and submit reviews or batch apply them with AI agents.
 //
-// Nothing persists past the process. The worktree lives in a system temp dir
-// and is removed in prSession.Close.
+// Nothing persists past the review. The worktree lives in a system temp dir
+// and is removed in prSession.Close, when the review ends (End review or
+// Ctrl-C); prcleanup.go sweeps up after a process that never got there.
 
 // prSession is one checked-out PR review. Draft comments live only in
 // memory (mu-guarded), same lifetime as an agentJob -- never written to
@@ -38,8 +39,9 @@ type prSession struct {
 	diffBase        string // merge-base(head, base branch), or "HEAD" if the base couldn't be resolved
 	diffBaseWarning string // set when diffBase fell back to "HEAD"; surfaced in the UI so an empty diff doesn't read as "no changes"
 
-	worktree string // temp checkout, removed in Close
-	srcRepo  string // the repo the worktree was registered against ("" for a plain clone)
+	worktree    string // temp checkout, removed in Close
+	srcRepo     string // the repo the worktree was registered against ("" for a plain clone)
+	sessionFile string // UI session state kept for this checkout only, removed in Close
 
 	comments []prComment
 	nextID   int64
@@ -175,7 +177,7 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 
 	writeAccess := provider.CheckPushAccess(ctx, target, token)
 
-	return &prSession{
+	p := &prSession{
 		provider:        provider,
 		target:          target,
 		meta:            meta,
@@ -185,23 +187,21 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 		diffBaseWarning: diffBaseWarning,
 		worktree:        tmp,
 		srcRepo:         srcRepo,
-	}, nil
+	}
+	p.writeMarker()
+	return p, nil
 }
 
 func (p *prSession) Root() string { return p.worktree }
 
-// Close removes the worktree registration (if any), cleans up temporary
-// references, and deletes the temp checkout. Safe on a nil receiver.
+// Close ends the review on disk: it removes the worktree and its
+// registration, the refs px0 fetched, the session file and the marker
+// (removePRCheckout). Safe on a nil receiver and safe to call twice.
 func (p *prSession) Close() {
 	if p == nil {
 		return
 	}
-	if p.srcRepo != "" {
-		exec.Command("git", "-C", p.srcRepo, "worktree", "remove", "--force", p.worktree).Run()
-		exec.Command("git", "-C", p.srcRepo, "update-ref", "-d", fmt.Sprintf("refs/px0/pr/%d", p.meta.Number)).Run()
-		exec.Command("git", "-C", p.srcRepo, "update-ref", "-d", fmt.Sprintf("refs/px0/base/%d", p.meta.Number)).Run()
-	}
-	os.RemoveAll(p.worktree)
+	removePRCheckout(p.srcRepo, p.worktree, p.meta.Number, p.sessionFile)
 }
 
 // errPRDiverged is returned by Pull when the checkout can't be fast-forwarded

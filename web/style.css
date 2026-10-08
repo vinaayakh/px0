@@ -3310,3 +3310,11 @@ body.inbox-mode #btn-collapse-tree, body.inbox-mode #btn-expand-tree, body.inbox
 .md .pf-text-md p, .md .pf-text-md ul, .md .pf-text-md ol, .md .pf-text-md .md-pre, .md .pf-preview p { margin: 0 0 8px; }
 .md .pf-text-md > :last-child, .md .pf-preview > :last-child { margin-bottom: 0; }
 .md .pf-text-md code { font-size: 12px; }
+.pr-btn-end { color: var(--gd); }
+.pr-btn-end:hover { background: color-mix(in srgb, var(--gd) 16%, transparent); color: var(--gd); }
+body.pr-ended-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 var(--ui); }
+.pr-ended { max-width: 560px; padding: 32px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); }
+.pr-ended h1 { margin: 0 0 12px; font-size: 20px; }
+.pr-ended p { margin: 0 0 8px; color: var(--dim); }
+.pr-ended code { font: 12px var(--mono); color: var(--fg); word-break: break-all; }
+.pr-ended a { color: var(--accent-fg); }
