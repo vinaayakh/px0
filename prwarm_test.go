@@ -165,6 +165,52 @@ func TestCheckoutPRFromLocalClone(t *testing.T) {
 	}
 }
 
+// Without a local clone the checkout is a repository of its own, fetched
+// from the PR's repository (refs/pull/N/head, not the fork's branch), and
+// Pull fetches from there too.
+func TestCheckoutPRWithoutLocalClone(t *testing.T) {
+	clone, prHead, mergeBase, _ := checkoutFixture(t)
+	upstream := strings.TrimSpace(gitTestRun(t, clone, "remote", "get-url", "origin"))
+	orig := prRepoURL
+	t.Cleanup(func() { prRepoURL = orig })
+	prRepoURL = func(PRTarget) string { return upstream }
+
+	target := PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 5, URL: "https://github.com/o/r/pull/5"}
+	p, err := checkoutPR(context.Background(), &GitHubProvider{}, target, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("checkoutPR: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	if p.srcRepo != "" {
+		t.Errorf("srcRepo = %q, want none", p.srcRepo)
+	}
+	if head := strings.TrimSpace(gitTestRun(t, p.worktree, "rev-parse", "HEAD")); head != prHead {
+		t.Errorf("HEAD = %s, want the PR head %s", head, prHead)
+	}
+	if p.diffBase != mergeBase || p.diffBaseWarning != "" {
+		t.Errorf("diffBase = %q (%q), want the merge-base %s", p.diffBase, p.diffBaseWarning, mergeBase)
+	}
+	if _, err := os.Stat(filepath.Join(p.worktree, "b.go")); err != nil {
+		t.Error("the PR's files must be checked out")
+	}
+	if m, ok := readPRMarker(prMarkerPath(p.worktree)); !ok || m.Number != 5 {
+		t.Error("the review's marker must be written")
+	}
+
+	next := strings.TrimSpace(gitTestRun(t, upstream, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit-tree", prHead+"^{tree}", "-p", prHead, "-m", "next"))
+	gitTestRun(t, upstream, "update-ref", "refs/pull/5/head", next)
+	if _, err := p.Pull(); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if head := strings.TrimSpace(gitTestRun(t, p.worktree, "rev-parse", "HEAD")); head != next {
+		t.Errorf("after Pull HEAD = %s, want %s", head, next)
+	}
+	if p.diffBase != mergeBase {
+		t.Errorf("after Pull diffBase = %q, want %s", p.diffBase, mergeBase)
+	}
+}
+
 // A PR whose metadata cannot be fetched leaves nothing behind: no checkout
 // and no ref from the head fetch that ran alongside.
 func TestCheckoutPRFailureLeavesNothing(t *testing.T) {

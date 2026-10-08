@@ -77,40 +77,44 @@ sequenceDiagram
     participant Git as Host Git CLI
 
     CLI->>PR: checkoutPR(ctx, provider, target, cwd, onProgress)
-    PR->>Prov: ResolveToken(cfg)
-    par started at once
-        PR->>Prov: FetchConversation, FetchComments (prwarm.go)
-    and
-        PR->>Prov: CheckPushAccess(ctx, target, token)
-    and
-        PR->>Prov: FetchPR(ctx, target, token)
-        Prov-->>PR: PRMeta (title, refs, state, merged)
-    and from a local clone (cwd, else a saved one: repos.go)
-        PR->>Git: git fetch <remote> refs/pull/n/head:refs/px0/pr/n
+    PR->>PR: find the clone: cwd, else a saved one (repos.go)
+    opt No local clone
+        PR->>Git: git init <tmp> as a blobless repo, origin = the PR's repo; write its marker
     end
-    PR->>PR: mkdir <tmp>, write its marker (prcleanup.go)
-    alt Local clone
-        par
-            PR->>Git: git -c checkout.workers=0 worktree add --detach <tmp> refs/px0/pr/n
+    par started at once
+        PR->>Git: git fetch <remote> refs/pull/n/head:refs/px0/pr/n (into the clone, else <tmp>)
+    and
+        PR->>Prov: ResolveToken(cfg)
+        par once the token is known
+            PR->>Prov: FetchConversation, FetchComments (prwarm.go)
         and
+            PR->>Prov: CheckPushAccess(ctx, target, token)
+        and
+            PR->>Prov: FetchPR(ctx, target, token)
+            Prov-->>PR: PRMeta (title, refs, state, merged)
             PR->>Git: git fetch <remote> refs/heads/<baseRef>:refs/px0/base/n
         end
+    end
+    alt Local clone
+        PR->>PR: mkdir <tmp>, write its marker (prcleanup.go)
+        PR->>Git: git -c checkout.workers=0 worktree add --detach <tmp> refs/px0/pr/n
     else No local clone
-        PR->>Git: git -c checkout.workers=0 clone --filter=blob:none --branch <headRef> <tmp>
-        PR->>Git: git fetch refs/heads/<baseRef>
+        PR->>Git: git -c checkout.workers=0 checkout --detach refs/px0/pr/n (downloads the files)
     end
     PR->>Git: git merge-base HEAD refs/px0/base/n
     PR-->>CLI: *prSession
 ```
 
-Measured on Windows against `cli/cli` (about 1,500 files) from a local clone, the URL prints about 2.3 s after start, down from 4.6–6.1 s when the steps ran one after another. Each fetch is about a second of round trip whatever it downloads, `worktree add` about 0.9 s with parallel checkout (1.4 s without), and the metadata request about 0.7 s.
+The head is always fetched from the PR's own repository (`refs/pull/N/head`), never from the fork, so it needs neither the metadata nor the token and starts first; it also works after the fork's branch is deleted. The base branch is fetched as soon as the metadata names it, while the head is still on its way. Both fetches pass `--no-write-fetch-head` since they run in the same repository at once, and without a local clone the partial-clone config is written up front (`initPartialRepo`) rather than by whichever filtered fetch comes first.
+
+Measured on Windows against `spf13/cobra` (about 1,100 commits), the URL prints about 2.3 s after start from a local clone (2.3–3.0 s when the base fetch waited on the head fetch) and about 3.5 s without one (4.4–6.5 s when it cloned the fork after the metadata, then fetched the base). Each fetch is about a second of round trip whatever it downloads, `worktree add` about 0.15 s here, a blobless checkout's file download about 1.3 s, and the metadata request 0.2–0.8 s. Once the URL is printed the page itself is ready about 0.5 s after it opens.
 
 The conversation and the comments already on the PR need only the PR's address and the token, so they are fetched alongside the checkout (`prwarm.go`) and handed to the page's first request for each; later requests fetch fresh. The startup sweep of dead reviews (`prcleanup.go`) runs in the background after the checkout, so deleting an old checkout never delays a new one.
 
 ### CLI Progress Narration
 `checkoutPR` accepts an `onProgress func(string)` callback. In `main.go`, this drives a smooth amber `uiSpinner`:
-1. `Fetching PR #... from <provider> into <clone>...` (or `metadata from <provider>` without a local clone)
-2. `Checking out PR #... and fetching <baseRef>...` (or `Cloning PR #...`)
+1. `Fetching PR #... from <provider> into <clone>...` (or `from <provider>...` without a local clone)
+2. `Checking out PR #... and fetching <baseRef>...`
 3. `PR #... checked out (<title>)` (or `[merged]` if already merged)
 
 ### Merged PR Handling
@@ -188,16 +192,16 @@ A PR checkout is process-scoped (Â§1) but not read-only: the sidebar git panel
 
 ### Why the Checkout Needs Its Own Push/Pull
 
-The worktree `checkoutPR` produces sits on a **detached** `HEAD` at `refs/px0/pr/<N>` (Â§3) â€” not the PR's branch name, and (in the worktree case) `origin` points at the *base* repository, which for a fork PR is not where the PR's commits live. A bare `git push`/`git pull` would either push nowhere useful or fail outright, so both operations are reimplemented against the PR's actual metadata instead of the checkout's local remote config.
+The worktree `checkoutPR` produces sits on a **detached** `HEAD` at `refs/px0/pr/<N>` (Â§3) â€” not the PR's branch name, and `origin` points at the *base* repository, which for a fork PR is not where the PR's commits live. A bare `git push`/`git pull` would either push nowhere useful or fail outright, so both operations are reimplemented against the PR's actual metadata instead of the checkout's local remote config.
 
 ### `prSession.Pull`: Fast-Forward Only, Same as Everywhere Else
 
 1. Refuses immediately if `gitHasUncommittedChanges(worktree)` â€” nothing here stashes.
-2. Re-fetches the PR head: `git fetch origin refs/pull/<N>/head:refs/px0/pr/<N>` in the worktree case (shared refs with `srcRepo`, same as the initial checkout), or a direct fetch of `meta.HeadRepoCloneURL`/`meta.HeadRef` into `FETCH_HEAD` in the bare-clone case.
+2. Re-fetches the PR head, `git fetch <remote> refs/pull/<N>/head:refs/px0/pr/<N>`, in the worktree (which shares refs and remotes with `srcRepo`, or is its own repository whose `origin` is the PR's repository), with the base branch fetched alongside.
 3. `git merge-base --is-ancestor <newRef> HEAD` â€” if the fetched ref is already an ancestor of the current checkout, it's a no-op ("already up to date"), not an error.
 4. `git merge-base --is-ancestor HEAD <newRef>` â€” if the current checkout is a clean ancestor of the fetched ref, `git reset --hard <newRef>` fast-forwards it (safe: step 1 already guaranteed a clean working tree).
 5. Otherwise â€” a local commit the PR head doesn't have, or a force-pushed head that isn't a fast-forward at all â€” `errPRDiverged` refuses the pull. Exactly like the plain-workspace path, this never invokes `git merge`, so there is never a real conflict to clean up.
-6. On a successful fast-forward, `p.meta.HeadSHA` and `p.diffBase`/`p.diffBaseWarning` are recomputed via the same `computeDiffBase` helper `checkoutPR` uses, and `handleGitPull` propagates the new `diffBase` to `s.diffBase`/`ix.SetDiffBase()` so `/api/diff`, `/api/gutter`, and the tree's status-against-base all pick it up immediately. The frontend (`gitpanel.js`) follows a successful pull with a full `reindexWorkspace()` plus `pr.js`'s `refreshPRMeta()` â€” a fresh `/api/pr/meta` fetch, a `renderBar()`, and a re-fetch of existing comments â€” so the PR bar, diff warning, and comment threads all reflect the new head, not the one captured at session start.
+6. On a successful fast-forward, `p.meta.HeadSHA` and `p.diffBase`/`p.diffBaseWarning` are recomputed via the same `resolveDiffBase` helper `checkoutPR` uses, and `handleGitPull` propagates the new `diffBase` to `s.diffBase`/`ix.SetDiffBase()` so `/api/diff`, `/api/gutter`, and the tree's status-against-base all pick it up immediately. The frontend (`gitpanel.js`) follows a successful pull with a full `reindexWorkspace()` plus `pr.js`'s `refreshPRMeta()` â€” a fresh `/api/pr/meta` fetch, a `renderBar()`, and a re-fetch of existing comments â€” so the PR bar, diff warning, and comment threads all reflect the new head, not the one captured at session start.
 
 ### `prSession.Push`: Straight to the PR's Own Branch
 

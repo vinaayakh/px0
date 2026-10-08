@@ -58,37 +58,17 @@ type prSession struct {
 // ErrPRMergedCancelled is returned when opening an already-merged PR is cancelled.
 var ErrPRMergedCancelled = errors.New("PR is already merged; opening cancelled")
 
-// computeDiffBase fetches the PR's base branch into worktree and returns a
-// merge-base with HEAD to diff against, so review diffs show exactly what
-// the PR changes rather than the head's full HEAD diff. Best-effort: if it
-// can't be resolved (e.g. the base branch was force-pushed away, or the
-// fetch itself failed), diffBase falls back to "HEAD" -- which diffs the
-// checkout against its own HEAD and looks empty -- with a warning explaining
-// why, so callers can surface it and a blank diff never reads as "no
-// changes". Shared by checkoutPR (initial checkout) and prSession.Pull
-// (re-sync after new commits land on the PR).
-func computeDiffBase(worktree, srcRepo, srcRemote string, target PRTarget, baseRef string, num int, onProgress func(string)) (diffBase, diffBaseWarning string) {
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("Computing merge base with %s...", baseRef))
+// fetchBaseRef fetches the PR's base branch to refs/px0/base/N in dir (the
+// clone the worktree belongs to, which shares its refs, or the checkout
+// itself without a clone) from remote, "origin" when empty. checkoutPR runs
+// it alongside the head fetch, so it leaves FETCH_HEAD alone. It returns
+// git's complaint, "" on success.
+func fetchBaseRef(dir, remote, baseRef string, num int) string {
+	if remote == "" {
+		remote = "origin"
 	}
-	fetchErr := fetchBaseRef(worktree, srcRepo, srcRemote, target, baseRef, num)
-	return resolveDiffBase(worktree, srcRepo, srcRemote, baseRef, num, fetchErr, onProgress)
-}
-
-// fetchBaseRef fetches the PR's base branch to refs/px0/base/N in dir: the
-// worktree, or the clone it belongs to (they share refs), which lets
-// checkoutPR fetch it while the worktree is still being checked out. It
-// returns git's complaint, "" on success.
-func fetchBaseRef(dir, srcRepo, srcRemote string, target PRTarget, baseRef string, num int) string {
 	baseRefspec := fmt.Sprintf("refs/heads/%s:refs/px0/base/%d", baseRef, num)
-	if srcRemote == "" {
-		srcRemote = "origin"
-	}
-	baseRemote := srcRemote
-	if srcRepo == "" {
-		baseRemote = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
-	}
-	out, err := exec.Command("git", "-C", dir, "fetch", "--no-tags", baseRemote, baseRefspec).CombinedOutput()
+	out, err := exec.Command("git", "-C", dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, baseRefspec).CombinedOutput()
 	if err == nil {
 		return ""
 	}
@@ -98,9 +78,76 @@ func fetchBaseRef(dir, srcRepo, srcRemote string, target PRTarget, baseRef strin
 	return err.Error()
 }
 
+// fetchPRHead fetches the PR's head to refs/px0/pr/N in dir from remote,
+// "origin" when empty. GitHub keeps it at refs/pull/N/head on the PR's own
+// repository, whether or not the fork's branch still exists.
+func fetchPRHead(dir, remote string, num int) error {
+	if remote == "" {
+		remote = "origin"
+	}
+	refspec := fmt.Sprintf("refs/pull/%d/head:refs/px0/pr/%d", num, num)
+	out, err := exec.Command("git", "-C", dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// prRepoURL is the clone URL of the PR's own repository, where its
+// refs/pull/N/head lives. A variable so tests can point it at a local one.
+var prRepoURL = func(target PRTarget) string {
+	return fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
+}
+
+// initPartialRepo makes dir an empty repository whose origin is url, set up
+// as `git clone --filter=blob:none` would: a fetch brings commits and trees,
+// and file contents come when they are checked out. The config is written
+// here rather than by the first filtered fetch because the head and base
+// fetches run at the same time and would both try to write it.
+func initPartialRepo(dir, url string) error {
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	f, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	// One write instead of a git config process per key. git honours
+	// extensions.partialClone in a version 0 repository.
+	_, err = fmt.Fprintf(f, "[extensions]\n\tpartialClone = origin\n[remote \"origin\"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tpromisor = true\n\tpartialclonefilter = blob:none\n", url)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// newPRCheckoutDir makes the empty temp directory a review is checked out
+// into and marks it at once, not when the checkout is done: a px0 killed
+// midway leaves a checkout the next start can tell is dead, and can
+// unregister from the clone, instead of one it must wait an hour on.
+func newPRCheckoutDir(srcRepo string, num int) (string, error) {
+	tmp, err := os.MkdirTemp("", prCheckoutPrefix+"*")
+	if err != nil {
+		return "", err
+	}
+	// macOS TempDir lives under /var -> /private/var; git rev-parse
+	// --show-toplevel reports the resolved path, so leaving tmp unresolved
+	// makes gitStatusAgainst's toplevel-relative prefix check fail for every
+	// file, silently emptying the PR's diff/status view.
+	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = resolved
+	}
+	(&prSession{worktree: tmp, srcRepo: srcRepo, meta: PRMeta{Number: num}}).writeMarker()
+	return tmp, nil
+}
+
 // resolveDiffBase is the merge-base of the worktree's HEAD with the fetched
-// base (fetchErr is fetchBaseRef's result), falling back to the clone's own
-// remote-tracking branch, then to "HEAD" with a warning.
+// base (fetchErr is fetchBaseRef's result), so review diffs show exactly
+// what the PR changes. It falls back to the clone's own remote-tracking
+// branch, then to "HEAD" -- which diffs the checkout against itself and
+// looks empty -- with a warning saying why, so callers can surface it and a
+// blank diff never reads as "no changes". Shared by checkoutPR and
+// prSession.Pull.
 func resolveDiffBase(worktree, srcRepo, srcRemote, baseRef string, num int, fetchErr string, onProgress func(string)) (diffBase, diffBaseWarning string) {
 	if srcRemote == "" {
 		srcRemote = "origin"
@@ -131,25 +178,24 @@ func resolveDiffBase(worktree, srcRepo, srcRemote, baseRef string, num int, fetc
 }
 
 // checkoutPR fetches a PR's head ref and checks it out into a system temp
-// directory: a git worktree of cwd's origin when cwd is already a clone of
-// the same repo (the common case -- opened inside the repo), or a shallow
-// single-branch clone of the PR head otherwise (a bare URL opened from an
-// unrelated directory).
+// directory: a git worktree of cwd when it is a clone of the PR's
+// repository (the common case -- opened inside the repo), else of a saved
+// clone of it (repos.go), else a blobless repository of its own fetched
+// from the PR's repository (a bare URL opened from an unrelated directory).
+//
+// It is almost all network round trips, so nothing waits on what it does
+// not need: the head fetch needs neither the token nor the metadata and
+// starts first, the page's first requests and the push check start once the
+// token is known, and the base branch is fetched as soon as the metadata
+// names it, while the head is still on its way.
 func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd string, onProgress func(string)) (*prSession, error) {
-	cfg := readSettings()
-	token, _ := provider.ResolveToken(cfg)
 	num := target.Number
+	tokenCh := make(chan string, 1)
+	go func() {
+		token, _ := provider.ResolveToken(readSettings())
+		tokenCh <- token
+	}()
 
-	// Everything below waits on the network, so whatever does not depend on
-	// something else starts at once: the page's first requests and the push
-	// check, the PR metadata, and -- from a local clone -- the PR head. Then
-	// the worktree is checked out while the base branch is fetched.
-	warm := startPRWarm(provider, target, token)
-	access := make(chan bool, 1)
-	go func() { access <- provider.CheckPushAccess(ctx, target, token) }()
-
-	// The clone to check out of: cwd when it is one of the PR's repository,
-	// else a saved local clone of it (repos.go), else a fresh clone below.
 	srcRepo, srcRemote := "", ""
 	if target.Owner != "" && target.Repo != "" {
 		if top, rem, ok := cloneOf(cwd, target.Owner, target.Repo); ok {
@@ -158,89 +204,86 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 			srcRepo, srcRemote = top, rem
 		}
 	}
-	prRef := fmt.Sprintf("refs/px0/pr/%d", num)
-	var headFetched chan error
-	if srcRepo != "" {
-		headFetched = make(chan error, 1)
-		go func() {
-			out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", srcRemote, fmt.Sprintf("refs/pull/%d/head:%s", num, prRef)).CombinedOutput()
-			if err != nil {
-				err = fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
-			}
-			headFetched <- err
-		}()
-	}
-	// dropHead undoes the head fetch when the checkout gives up.
-	dropHead := func() {
-		if headFetched != nil {
-			<-headFetched
-			exec.Command("git", "-C", srcRepo, "update-ref", "-d", prRef).Run()
+
+	// gitDir is where the head and base are fetched to: the clone, or
+	// without one the checkout itself, which then exists from the start.
+	gitDir, tmp := srcRepo, ""
+	if srcRepo == "" {
+		var err error
+		if tmp, err = newPRCheckoutDir("", num); err != nil {
+			return nil, err
 		}
+		if err := initPartialRepo(tmp, prRepoURL(target)); err != nil {
+			removePRCheckout("", tmp, 0, "")
+			return nil, err
+		}
+		gitDir = tmp
 	}
+	headFetched := make(chan error, 1)
+	go func() { headFetched <- fetchPRHead(gitDir, srcRemote, num) }()
+
+	token := <-tokenCh
+	warm := startPRWarm(provider, target, token)
+	access := make(chan bool, 1)
+	go func() { access <- provider.CheckPushAccess(ctx, target, token) }()
 
 	if onProgress != nil {
 		if srcRepo != "" {
 			onProgress(fmt.Sprintf("Fetching PR #%d from %s into %s...", num, provider.Name(), srcRepo))
 		} else {
-			onProgress(fmt.Sprintf("Fetching PR #%d metadata from %s...", num, provider.Name()))
+			onProgress(fmt.Sprintf("Fetching PR #%d from %s...", num, provider.Name()))
 		}
+	}
+	// giveUp removes what the checkout made once the head fetch is done.
+	// dropHead also removes the head ref from the clone; only before the
+	// head fetch is waited on, as later another review of the PR may share
+	// it (the sweep sorts that out).
+	giveUp := func(dropHead bool) {
+		if headFetched != nil {
+			<-headFetched
+		}
+		if dropHead && srcRepo != "" {
+			exec.Command("git", "-C", srcRepo, "update-ref", "-d", fmt.Sprintf("refs/px0/pr/%d", num)).Run()
+		}
+		removePRCheckout(srcRepo, tmp, 0, "")
 	}
 	meta, err := provider.FetchPR(ctx, target, token)
 	if err != nil {
-		dropHead()
+		giveUp(true)
 		return nil, err
 	}
+	baseFetched := make(chan string, 1)
+	go func() { baseFetched <- fetchBaseRef(gitDir, srcRemote, meta.BaseRef, num) }()
 
-	tmp, err := os.MkdirTemp("", "px0-pr-*")
-	if err != nil {
-		dropHead()
-		return nil, err
-	}
-	// macOS TempDir lives under /var -> /private/var; git rev-parse
-	// --show-toplevel reports the resolved path, so leaving tmp unresolved
-	// makes gitStatusAgainst's toplevel-relative prefix check fail for every
-	// file, silently emptying the PR's diff/status view.
-	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
-		tmp = resolved
-	}
-	// Marked at once, not when the checkout is done: a px0 killed midway
-	// leaves a checkout the next start can tell is dead, and can unregister
-	// from the clone, instead of one it must wait an hour on.
-	(&prSession{worktree: tmp, srcRepo: srcRepo, meta: PRMeta{Number: num}}).writeMarker()
-	cleanup := func() { removePRCheckout(srcRepo, tmp, 0, "") } // the refs are left to the sweep: another review may share them
-
-	var diffBase, diffBaseWarning string
 	if srcRepo != "" {
-		if err := <-headFetched; err != nil {
-			headFetched = nil
-			cleanup()
+		if tmp, err = newPRCheckoutDir(srcRepo, num); err != nil {
+			<-baseFetched
+			giveUp(true)
 			return nil, err
 		}
-		if onProgress != nil {
-			onProgress(fmt.Sprintf("Checking out PR #%d and fetching %s...", num, meta.BaseRef))
-		}
-		baseFetched := make(chan string, 1)
-		go func() { baseFetched <- fetchBaseRef(srcRepo, srcRepo, srcRemote, target, meta.BaseRef, num) }()
-		if out, err := exec.Command("git", "-C", srcRepo, "-c", parallelCheckout, "worktree", "add", "--detach", tmp, prRef).CombinedOutput(); err != nil {
-			<-baseFetched
-			cleanup()
-			return nil, fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		diffBase, diffBaseWarning = resolveDiffBase(tmp, srcRepo, srcRemote, meta.BaseRef, num, <-baseFetched, onProgress)
-	} else {
-		if onProgress != nil {
-			onProgress(fmt.Sprintf("Cloning PR #%d (%s)...", num, meta.HeadRef))
-		}
-		cloneURL := meta.HeadRepoCloneURL
-		if cloneURL == "" {
-			cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
-		}
-		if out, err := exec.Command("git", "-c", parallelCheckout, "clone", "--filter=blob:none", "--branch", meta.HeadRef, "--single-branch", cloneURL, tmp).CombinedOutput(); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("git clone PR head: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		diffBase, diffBaseWarning = computeDiffBase(tmp, srcRepo, srcRemote, target, meta.BaseRef, num, onProgress)
 	}
+	err = <-headFetched
+	headFetched = nil
+	if err != nil {
+		<-baseFetched
+		giveUp(false)
+		return nil, err
+	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf("Checking out PR #%d and fetching %s...", num, meta.BaseRef))
+	}
+	prRef := fmt.Sprintf("refs/px0/pr/%d", num)
+	checkout := exec.Command("git", "-C", srcRepo, "-c", parallelCheckout, "worktree", "add", "--detach", tmp, prRef)
+	if srcRepo == "" {
+		// Downloads the files of this one commit, in one request.
+		checkout = exec.Command("git", "-C", tmp, "-c", parallelCheckout, "checkout", "-q", "--detach", prRef)
+	}
+	if out, err := checkout.CombinedOutput(); err != nil {
+		<-baseFetched
+		giveUp(false)
+		return nil, fmt.Errorf("git checkout PR head: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	diffBase, diffBaseWarning := resolveDiffBase(tmp, srcRepo, srcRemote, meta.BaseRef, num, <-baseFetched, onProgress)
 
 	p := &prSession{
 		provider:        provider,
@@ -286,49 +329,41 @@ var errPRDiverged = errors.New("local checkout has diverged from the PR head; re
 func (p *prSession) Pull() (info string, err error) {
 	p.mu.Lock()
 	worktree, srcRepo, srcRemote, num := p.worktree, p.srcRepo, p.srcRemote, p.meta.Number
-	if srcRemote == "" {
-		srcRemote = "origin"
-	}
-	target, baseRef := p.target, p.meta.BaseRef
-	headRepoCloneURL, headRef := p.meta.HeadRepoCloneURL, p.meta.HeadRef
+	baseRef := p.meta.BaseRef
 	p.mu.Unlock()
 
 	if gitHasUncommittedChanges(worktree) {
 		return "", errors.New("commit or discard your local changes before pulling")
 	}
 
-	newRef := fmt.Sprintf("refs/px0/pr/%d", num)
-	if srcRepo != "" {
-		headRefspec := fmt.Sprintf("refs/pull/%d/head:%s", num, newRef)
-		if out, err := exec.Command("git", "-C", srcRepo, "fetch", "--no-tags", srcRemote, headRefspec).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-	} else {
-		cloneURL := headRepoCloneURL
-		if cloneURL == "" {
-			cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
-		}
-		if out, err := exec.Command("git", "-C", worktree, "fetch", "--no-tags", cloneURL, headRef).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git fetch PR head: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		newRef = "FETCH_HEAD"
+	// The worktree shares its refs and remotes with the clone it belongs to,
+	// if any, so both fetch into it. The base is fetched alongside the head.
+	baseFetched := make(chan string, 1)
+	go func() { baseFetched <- fetchBaseRef(worktree, srcRemote, baseRef, num) }()
+	if err := fetchPRHead(worktree, srcRemote, num); err != nil {
+		<-baseFetched
+		return "", err
 	}
-
+	newRef := fmt.Sprintf("refs/px0/pr/%d", num)
 	if exec.Command("git", "-C", worktree, "merge-base", "--is-ancestor", newRef, "HEAD").Run() == nil {
+		<-baseFetched
 		return "already up to date", nil
 	}
 	if exec.Command("git", "-C", worktree, "merge-base", "--is-ancestor", "HEAD", newRef).Run() != nil {
+		<-baseFetched
 		return "", errPRDiverged
 	}
 	if out, err := exec.Command("git", "-C", worktree, "reset", "--hard", newRef).CombinedOutput(); err != nil {
+		<-baseFetched
 		return "", fmt.Errorf("git reset: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	shaOut, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
 	if err != nil {
+		<-baseFetched
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
 	}
-	diffBase, diffBaseWarning := computeDiffBase(worktree, srcRepo, srcRemote, target, baseRef, num, nil)
+	diffBase, diffBaseWarning := resolveDiffBase(worktree, srcRepo, srcRemote, baseRef, num, <-baseFetched, nil)
 
 	p.mu.Lock()
 	p.meta.HeadSHA = strings.TrimSpace(string(shaOut))
