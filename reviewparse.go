@@ -37,14 +37,19 @@ var reviewSchema = func() string {
 			"suggestion": str,
 			"confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 		},
-		"required": []string{"path", "line", "side", "quote", "severity", "category", "body", "confidence"},
+		// line, side and quote are left optional so a finding about a whole
+		// file (missing tests, a design concern) can still be a suggestion
+		// rather than be folded into the summary; anchoring makes it
+		// file-level.
+		"required": []string{"path", "severity", "category", "body", "confidence"},
 	}
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"summary":     str,
-			"verdict":     map[string]any{"type": "string", "enum": []string{"comment", "approve", "request_changes"}},
-			"suggestions": map[string]any{"type": "array", "items": item},
+			"summary": map[string]any{"type": "string", "description": "Two to five sentences for the review body. Never put findings here: each goes in suggestions."},
+			"verdict": map[string]any{"type": "string", "enum": []string{"comment", "approve", "request_changes"}},
+			"suggestions": map[string]any{"type": "array", "items": item,
+				"description": "Every finding, one per entry. Empty only when there is nothing worth a comment."},
 		},
 		"required": []string{"summary", "verdict", "suggestions"},
 	}
@@ -71,6 +76,13 @@ func parseReviewJobOutput(stdout string, structured bool) (reviewOutput, error) 
 		if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &env); err == nil && env.Type == "result" {
 			if len(env.StructuredOutput) > 0 && string(env.StructuredOutput) != "null" {
 				if r, ok := decodeReviewJSON(string(env.StructuredOutput)); ok {
+					// A model can fill the tool call thinly and print the full
+					// result as text: take the text when it has more findings.
+					if len(r.Suggestions) == 0 {
+						if t, err := parseReviewOutput(env.Result); err == nil && len(t.Suggestions) > 0 {
+							return t, nil
+						}
+					}
 					return r, nil
 				}
 			}
@@ -100,8 +112,8 @@ var (
 	suggestionKeyAliases = map[string]string{
 		"file": "path", "filename": "path", "files": "path",
 		"start_line": "startLine", "startline": "startLine", "line_start": "startLine",
-		"end_line": "line", "endline": "line", "line_end": "line",
-		"code": "quote", "snippet": "quote",
+		"end_line": "line", "endline": "line", "line_end": "line", "line_number": "line", "linenumber": "line",
+		"code": "quote", "snippet": "quote", "quoted_line": "quote",
 		"issue": "body", "comment": "body", "message": "body", "description": "body",
 		"fix": "suggestion", "replacement": "suggestion", "suggested_code": "suggestion",
 		"priority": "severity", "level": "severity",
@@ -121,12 +133,43 @@ func normalizeReviewKeys(m map[string]any) {
 			continue
 		}
 		renameKeys(s, suggestionKeyAliases, []string{"path", "line", "startLine", "side", "quote", "severity", "category", "body", "suggestion", "confidence"})
+		fillBody(s)
 		if files, ok := s["path"].([]any); ok && len(files) > 0 {
 			s["path"] = files[0]
 		} else if f, ok := s["path"].(string); ok && strings.Contains(f, ",") {
 			s["path"] = strings.TrimSpace(strings.Split(f, ",")[0])
 		}
 		textFields(s, "path", "side", "quote", "severity", "category", "body", "suggestion")
+	}
+}
+
+// bodyKeys are where models put a finding's text when it has no body, in
+// the order they are joined.
+var bodyKeys = []string{"title", "summary", "problem", "explanation", "details", "detail", "rationale", "reason", "text", "recommendation"}
+
+// fillBody builds a missing body from the other text a finding has, so a
+// finding is not dropped for naming its text differently: a title leads in
+// bold.
+func fillBody(s map[string]any) {
+	if b, ok := s["body"].(string); ok && strings.TrimSpace(b) != "" {
+		return
+	}
+	var parts []string
+	for _, want := range bodyKeys {
+		for k, v := range s {
+			t, ok := v.(string)
+			if !ok || !strings.EqualFold(k, want) || strings.TrimSpace(t) == "" {
+				continue
+			}
+			t = strings.TrimSpace(t)
+			if want == "title" {
+				t = "**" + t + "**"
+			}
+			parts = append(parts, t)
+		}
+	}
+	if len(parts) > 0 {
+		s["body"] = strings.Join(parts, "\n\n")
 	}
 }
 

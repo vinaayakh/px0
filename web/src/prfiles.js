@@ -38,6 +38,7 @@ const pfFull = new Map();        // path -> hunks of a large file, loaded on req
 const pfRows = new Map();        // path -> Map('SIDE:line' -> {box, els})
 const pfComposers = new Map();   // 'path|SIDE|line' -> {path, side, line, startLine, el}
 const pfEditors = new Map();     // 'ai:id' or 'draft:id' -> editor element
+const pfAutoLoaded = new Set();  // large files loaded (or tried once) because a comment sits on their lines
 
 export function initPRFiles() {
   if (!S.meta?.pr) return;
@@ -54,7 +55,7 @@ export function initPRFiles() {
 // stays put.
 let pfAiSig = '';
 function pfOnSuggestions() {
-  const sig = reviewSuggestions().map(s => s.id + ':' + s.status + ':' + s.line + ':' + s.body.length + ':' + (s.ai?.stale ? 1 : 0)).join(',');
+  const sig = reviewSuggestions().map(s => s.id + ':' + s.status + ':' + s.side + ':' + (s.startLine || 0) + ':' + s.line + ':' + (s.subjectType || '') + ':' + s.body.length + ':' + (s.ai?.stale ? 1 : 0)).join(',');
   if (sig === pfAiSig) return;
   pfAiSig = sig;
   pfRedrawThreads();
@@ -75,6 +76,7 @@ function pfLoad() {
 async function pfReload() {
   pfData = null;
   pfFull.clear();
+  pfAutoLoaded.clear();
   await pfLoad();
   const a = pfArticle();
   if (a) pfDraw(a);
@@ -181,18 +183,21 @@ function pfFillBody(sec, f) {
 }
 
 // Where each reviewable line sits: 'RIGHT:n' for a context or added line,
-// 'LEFT:n' for a deleted one (what GitHub's side/line mean). box is the row
-// a thread goes after -- the pair in the split layout.
+// 'LEFT:n' for a deleted or context one (what GitHub's side/line mean: a
+// context line can be commented on from either side). box is the row a
+// thread goes after -- the pair in the split layout.
 function pfIndexRows(path, body) {
   const idx = new Map();
-  for (const el of body.querySelectorAll('[data-l], [data-old-l]')) {
-    if (el.dataset.reviewable === '0') continue;
-    const oldOnly = el.dataset.l === undefined;
-    const key = oldOnly ? 'LEFT:' + el.dataset.oldL : 'RIGHT:' + el.dataset.l;
+  const add = (key, el) => {
     const box = el.closest('.diff-row-pair') || el;
     const at = idx.get(key);
     if (at) at.els.push(el);
     else idx.set(key, { box, els: [el] });
+  };
+  for (const el of body.querySelectorAll('[data-l], [data-old-l]')) {
+    if (el.dataset.reviewable === '0') continue;
+    if (el.dataset.l !== undefined) add('RIGHT:' + el.dataset.l, el);
+    if (el.dataset.oldL !== undefined) add('LEFT:' + el.dataset.oldL, el);
   }
   pfRows.set(path, idx);
 }
@@ -358,13 +363,21 @@ function pfRedrawThreads() {
     group(c.path, pfKey(c.side, c.line)).composer = c;
   }
 
+  const autoLoad = [];
   for (const [path, byKey] of groups) {
     const idx = pfRows.get(path);
     for (const [key, g] of byKey) {
       const at = idx?.get(key);
       if (!at) {
         // Not on a line the diff shows (or the file's diff is not loaded):
-        // keep it reachable in the file's notes.
+        // keep it reachable in the file's notes. A large diff with a draft
+        // or suggestion on one of its lines loads itself once, so the card
+        // moves onto its line.
+        const f = pfFile(path);
+        if (f?.tooLarge && !pfFull.has(path) && !pfAutoLoaded.has(path) && (g.drafts.length || g.ai.length)) {
+          pfAutoLoaded.add(path);
+          autoLoad.push(path);
+        }
         for (const c of [...g.drafts, ...g.ai]) pfNote(notes, path, c);
         if (g.composer) pfComposers.delete(pfComposerKey(g.composer));
         continue;
@@ -401,6 +414,8 @@ function pfRedrawThreads() {
   for (const el of root.querySelectorAll('.pf-text:not(.pf-text-md)')) pfMarkdown(el);
   pfDrawTree(groups, notes);
   pfDrawBar(ai.length, drafts.length);
+  // After this pass: each load redraws the threads when it lands.
+  if (autoLoad.length) setTimeout(() => { for (const p of autoLoad) pfLoadFull(p); });
   if (active && root.contains(active) && document.activeElement !== active) {
     active.focus();
     if (caret) try { active.setSelectionRange(caret[0], caret[1]); } catch {}

@@ -19,6 +19,7 @@ import (
 const (
 	anchorAnchored   = "anchored"   // reported line and quote agree
 	anchorReanchored = "reanchored" // moved to the one nearby line matching the quote
+	anchorUnverified = "unverified" // kept on the reported line, which is in the diff, though the quote did not match it
 	anchorFile       = "file"       // no line could be trusted; comment on the whole file
 	anchorSummary    = "summary"    // file is not part of the PR; goes in the review body
 )
@@ -38,6 +39,7 @@ type diffFile struct {
 
 	rightHunk map[int]int // line -> hunk index, for range checks
 	leftHunk  map[int]int
+	ctxNew    map[int]int // base line -> new line, for context lines
 }
 
 // prDiff is a whole PR diff (git diff -M <merge-base>), keyed by new path.
@@ -98,7 +100,7 @@ func parseUnifiedDiff(diff string) *prDiff {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			finish()
-			cur = &diffFile{Right: map[int]string{}, Left: map[int]string{}, rightHunk: map[int]int{}, leftHunk: map[int]int{}}
+			cur = &diffFile{Right: map[int]string{}, Left: map[int]string{}, rightHunk: map[int]int{}, leftHunk: map[int]int{}, ctxNew: map[int]int{}}
 			inHunk = false
 			if a, b, ok := splitDiffGitHeader(strings.TrimPrefix(line, "diff --git ")); ok {
 				cur.OldPath, cur.Path = a, b
@@ -161,6 +163,7 @@ func parseUnifiedDiff(diff string) *prDiff {
 			cur.rightHunk[newLine] = hunk
 			cur.Left[oldLine] = text
 			cur.leftHunk[oldLine] = hunk
+			cur.ctxNew[oldLine] = newLine
 			newLine++
 			oldLine++
 			newLeft--
@@ -270,17 +273,60 @@ func quoteKey(q string) string {
 	return ""
 }
 
+// normCode reduces a line of code for comparison: whitespace runs collapsed
+// to one space, ends trimmed.
+func normCode(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// quoteLines returns a quote's non-blank lines, normalised.
+func quoteLines(q string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(q, "\r", ""), "\n") {
+		if s := normCode(l); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// lineMatches reports whether a diff line's text is one of the quote lines:
+// exactly, or once a "+"/"-" copied from the diff is dropped, or (loose) as a
+// distinctive part of the line -- models often quote only part of a line.
+func lineMatches(text string, qs []string, loose bool) bool {
+	t := normCode(text)
+	if t == "" {
+		return false
+	}
+	for _, q := range qs {
+		if t == q || (len(q) > 1 && (q[0] == '+' || q[0] == '-') && t == normCode(q[1:])) {
+			return true
+		}
+		if loose && len(q) >= 8 && strings.Contains(t, q) {
+			return true
+		}
+	}
+	return false
+}
+
+// anchorRangeMax bounds how many lines a reported range is searched for its
+// quote.
+const anchorRangeMax = 50
+
 // Anchor validates one suggestion against the diff:
 //  1. a file outside the PR becomes a summary note;
-//  2. a line inside a hunk on its side whose text matches the quote stays;
+//  2. a line inside a hunk on its side stays when the quote matches it (or,
+//     for a range, any line of the range);
 //  3. otherwise the quote is searched within anchorWindow lines on the same
-//     side, then the other side (models mix them up); exactly one match moves
-//     the anchor there;
-//  4. anything else becomes a file-level comment, keeping the reported line
+//     side, then the other side (models mix them up); the nearest match moves
+//     the anchor there, and two equally near ones are ambiguous;
+//  4. failing that, a quote matching exactly one line of the file moves the
+//     anchor there (models count lines from the hunk headers and drift);
+//  5. a reported line that is in the diff stays, marked unverified;
+//  6. anything else becomes a file-level comment, keeping the reported line
 //     as a hint.
 //
 // A range (startLine < line) moves with its end line and is kept only when its
-// start is in the same hunk on the same side.
+// start is in the same hunk on the same side. A context line is placed on the
+// RIGHT side, where GitHub and Files changed show it, whichever side was named.
 func (pd *prDiff) Anchor(path string, line, startLine int, side, quote string) anchorResult {
 	side = strings.ToUpper(strings.TrimSpace(side))
 	if side != "LEFT" {
@@ -298,46 +344,115 @@ func (pd *prDiff) Anchor(path string, line, startLine int, side, quote string) a
 		res.Status = anchorFile
 		return res
 	}
-	q := quoteKey(quote)
+	qs := quoteLines(quote)
 	lines := func(s string) map[int]string {
 		if s == "LEFT" {
 			return f.Left
 		}
 		return f.Right
 	}
+	_, inDiff := lines(side)[line]
 
-	if text, ok := lines(side)[line]; ok && (q == "" || strings.TrimSpace(text) == q) {
-		res.Status = anchorAnchored
-		res.StartLine = f.rangeStart(side, line, startLine)
-		return res
+	if inDiff && (len(qs) == 0 || f.quoteInRange(lines(side), line, startLine, qs)) {
+		return f.place(res, side, line, startLine, anchorAnchored)
 	}
-	if q != "" {
+	if len(qs) > 0 {
+		key := qs[len(qs)-1:] // the range's end line
 		other := "LEFT"
 		if side == "LEFT" {
 			other = "RIGHT"
 		}
+		ambiguous := false
 		for _, s := range []string{side, other} {
-			var hits []int
-			for n := line - anchorWindow; n <= line+anchorWindow; n++ {
-				if text, ok := lines(s)[n]; ok && strings.TrimSpace(text) == q {
-					hits = append(hits, n)
-				}
+			n, found, amb := nearestMatch(lines(s), line, key)
+			if amb {
+				ambiguous = true
+				break // don't guess, and don't look for a luckier side
 			}
-			if len(hits) == 1 {
-				res.Status = anchorReanchored
-				res.Side = s
-				res.Line = hits[0]
+			if found {
+				start := 0
 				if startLine > 0 && s == side {
-					res.StartLine = f.rangeStart(s, hits[0], startLine+hits[0]-line)
+					start = startLine + n - line
 				}
-				return res
+				return f.place(res, s, n, start, anchorReanchored)
 			}
-			if len(hits) > 1 {
-				break // ambiguous: don't guess, and don't look for a luckier side
+		}
+		if !ambiguous {
+			for _, s := range []string{side, other} {
+				if n, ok := uniqueMatch(lines(s), key); ok {
+					return f.place(res, s, n, 0, anchorReanchored)
+				}
 			}
 		}
 	}
+	if inDiff {
+		return f.place(res, side, line, startLine, anchorUnverified)
+	}
 	res.Status = anchorFile
+	return res
+}
+
+// quoteInRange reports whether the quote matches the reported line or, for a
+// range, any line of it.
+func (f *diffFile) quoteInRange(m map[int]string, line, start int, qs []string) bool {
+	lo := line
+	if start > 0 && start < line && line-start <= anchorRangeMax {
+		lo = start
+	}
+	for n := lo; n <= line; n++ {
+		if text, ok := m[n]; ok && lineMatches(text, qs, true) {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestMatch finds the line within anchorWindow of line matching the quote,
+// nearest first; two at the same distance are ambiguous.
+func nearestMatch(m map[int]string, line int, qs []string) (n int, found, ambiguous bool) {
+	match := func(k int) bool { text, ok := m[k]; return ok && lineMatches(text, qs, true) }
+	if match(line) { // on the other side: the same number there
+		return line, true, false
+	}
+	for d := 1; d <= anchorWindow; d++ {
+		lo, hi := match(line-d), match(line+d)
+		switch {
+		case lo && hi:
+			return 0, false, true
+		case lo:
+			return line - d, true, false
+		case hi:
+			return line + d, true, false
+		}
+	}
+	return 0, false, false
+}
+
+// uniqueMatch finds the one line in m exactly matching the quote.
+func uniqueMatch(m map[int]string, qs []string) (int, bool) {
+	hit, n := 0, 0
+	for k, text := range m {
+		if lineMatches(text, qs, false) {
+			hit, n = k, n+1
+		}
+	}
+	return hit, n == 1
+}
+
+// place sets where a suggestion lands. A context line exists on both sides;
+// one named on the LEFT moves to its RIGHT number.
+func (f *diffFile) place(res anchorResult, side string, line, start int, status string) anchorResult {
+	if side == "LEFT" {
+		if n, ok := f.ctxNew[line]; ok {
+			ns, ok := f.ctxNew[start]
+			if !ok {
+				ns = 0
+			}
+			side, line, start = "RIGHT", n, ns
+		}
+	}
+	res.Status, res.Side, res.Line = status, side, line
+	res.StartLine = f.rangeStart(side, line, start)
 	return res
 }
 

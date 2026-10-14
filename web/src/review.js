@@ -25,6 +25,7 @@ let rvFilter = 'pending'; // 'pending' or 'all'
 let rvSelId = 0;          // selected suggestion id
 let rvEditId = 0;         // suggestion being edited
 let rvPollTimer = 0;
+let rvSig = '';           // what the list was last drawn from (rvLoad)
 let rvPrefilled = 0;      // run id whose summary was already offered to the form
 let rvStale = 0;          // pending suggestions made against an older head
 let rvHeadMoved = false;  // GitHub has a newer head than this checkout
@@ -35,7 +36,7 @@ const RV_SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const RV_SEV_LABEL = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
 const rvSev = s => (s?.ai?.severity in RV_SEV_RANK ? s.ai.severity : 'medium');
 const RV_LOW_CONFIDENCE = 0.5;
-const RV_ANCHOR_LABEL = { anchored: '', reanchored: 're-anchored', file: 'file-level', summary: 'summary note' };
+const RV_ANCHOR_LABEL = { anchored: '', reanchored: 're-anchored', unverified: 'unverified line', file: 'file-level', summary: 'summary note' };
 
 export function initReview() {
   rvPage = $('#rv-page');
@@ -96,6 +97,8 @@ async function rvLoad() {
   try {
     j = await api('/api/pr/review/suggestions');
   } catch {
+    // One failed request must not leave a running review stuck on "Reviewing…".
+    if (rvRun?.status === 'running') rvSchedulePoll(3000);
     return;
   }
   const wasRunning = rvRun?.status === 'running';
@@ -103,7 +106,11 @@ async function rvLoad() {
   rvItems = j.suggestions || [];
   rvStale = j.stale || 0;
   rvHeadMoved = !!(j.remoteHead && j.remoteHead !== j.head);
-  rvRender();
+  // The poll lands every second while a run goes: rebuild the list and tabs
+  // only when something in them changed, so an open edit box keeps its text.
+  const sig = JSON.stringify([rvRun?.status, rvStale, rvItems.map(s => [s.id, s.status, s.path, s.side, s.line, s.startLine, s.body, s.ai?.stale])]);
+  if (sig === rvSig) rvRenderRun();
+  else { rvSig = sig; rvRender(); }
   if (rvRun?.status === 'running') {
     rvSchedulePoll();
     return;
@@ -116,9 +123,9 @@ async function rvLoad() {
   renderPRMarkers();
 }
 
-function rvSchedulePoll() {
+function rvSchedulePoll(ms = 1000) {
   clearTimeout(rvPollTimer);
-  rvPollTimer = setTimeout(rvLoad, 1000);
+  rvPollTimer = setTimeout(rvLoad, ms);
 }
 
 function rvAnnounce() {
@@ -290,9 +297,11 @@ function rvCountsText(r) {
   const parts = [];
   if (c.anchored) parts.push(c.anchored + ' on their line');
   if (c.reanchored) parts.push(c.reanchored + ' re-anchored');
+  if (c.unverified) parts.push(c.unverified + ' on an unverified line');
   if (c.file) parts.push(c.file + ' file-level');
   if (c.summary) parts.push(c.summary + ' for the summary');
   if (c.repeat) parts.push(c.repeat + ' already decided, hidden');
+  if (c.dropped) parts.push(c.dropped + ' empty, skipped');
   return total + ' suggestion' + (total === 1 ? '' : 's') + ': ' + parts.join(', ') + '.';
 }
 
@@ -319,6 +328,7 @@ function rvItemHtml(s) {
   const anchor = RV_ANCHOR_LABEL[ai.anchor] || '';
   const anchorTitle = ai.anchor === 'reanchored'
     ? 'The model said line ' + ai.reportedLine + '; px0 found the quoted text on this line'
+    : ai.anchor === 'unverified' ? 'The quoted text was not found near line ' + ai.reportedLine + ', so check that this is the right line'
     : ai.anchor === 'file' ? 'The line could not be matched to the diff, so this comments on the whole file'
       : ai.anchor === 'summary' ? 'This file is not part of the PR, so the comment goes in the review body' : '';
   const cls = ['rv-item', 'rv-st-' + s.status];

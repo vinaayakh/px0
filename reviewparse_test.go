@@ -122,3 +122,61 @@ func TestReviewSchemaMatchesOutput(t *testing.T) {
 		t.Error("the schema goes on a command line: keep shell metacharacters out of it")
 	}
 }
+
+func TestParseReviewOutputMarkersBeatTrailingObjects(t *testing.T) {
+	block := reviewBeginMarker + "\n" + parseFixture + "\n" + reviewEndMarker
+	for name, tail := range map[string]string{
+		"recap":          `{"summary":"LGTM overall"}`,
+		"echoed finding": `{"path":"a.go","description":"bug"}`,
+		"verdict-only":   `{"verdict":"comment"}`,
+	} {
+		r, err := parseReviewOutput("prose\n" + block + "\n" + tail)
+		if err != nil || len(r.Suggestions) != 1 || r.Summary != "Adds B." {
+			t.Errorf("%s after the markers: %+v, %v", name, r, err)
+		}
+	}
+}
+
+func TestDecodeReviewJSONNeedsSuggestions(t *testing.T) {
+	// A single finding, or a summary alone, is not a result.
+	if r, ok := decodeReviewJSON(`{"path":"a.go","line":3,"description":"bug two"}`); ok {
+		t.Errorf("a lone finding was taken for a result: %+v", r)
+	}
+	// A wrapper around the result: the nested result is found.
+	r, ok := decodeReviewJSON(`{"description":"PR review","result":` + parseFixture + `}`)
+	if !ok || len(r.Suggestions) != 1 {
+		t.Errorf("wrapped result: %+v %v", r, ok)
+	}
+	// A verdict with no list is taken when nothing better is there.
+	if r, ok := decodeReviewJSON(`{"summary":"Fine.","verdict":"approve"}`); !ok || r.Verdict != "approve" {
+		t.Errorf("verdict-only: %+v %v", r, ok)
+	}
+}
+
+func TestDecodeReviewJSONRepairsInvalidEscapes(t *testing.T) {
+	text := `{"summary":"S","suggestions":[{"path":"a.go","line":3,"quote":"re := regexp.MustCompile("\d+")","body":"Use C:\Users\x."},` +
+		`{"path":"b.go","line":1,"description":"Second."}]}`
+	text = strings.Replace(text, `MustCompile("\d+")`, `MustCompile(\"\d+\")`, 1)
+	r, ok := decodeReviewJSON(text)
+	if !ok || len(r.Suggestions) != 2 || r.Summary != "S" || r.Suggestions[0].Quote != `re := regexp.MustCompile("\d+")` {
+		t.Fatalf("invalid escapes: %+v %v", r, ok)
+	}
+}
+
+func TestDecodeReviewJSONBodyFromOtherKeys(t *testing.T) {
+	r, ok := decodeReviewJSON(`{"summary":"S","suggestions":[{"path":"a.go","line":3,"title":"Bug","explanation":"bad thing"}]}`)
+	if !ok || len(r.Suggestions) != 1 || r.Suggestions[0].Body != "**Bug**\n\nbad thing" {
+		t.Fatalf("body from title and explanation: %+v %v", r, ok)
+	}
+}
+
+func TestParseReviewJobOutputEmptyStructuredFallsBackToText(t *testing.T) {
+	out := envelope(t, map[string]any{
+		"result":            reviewBeginMarker + "\n" + parseFixture + "\n" + reviewEndMarker,
+		"structured_output": map[string]any{"summary": "Thin.", "verdict": "comment", "suggestions": []any{}},
+	})
+	r, err := parseReviewJobOutput(out, true)
+	if err != nil || len(r.Suggestions) != 1 {
+		t.Fatalf("empty structured output must not hide the text result: %+v, %v", r, err)
+	}
+}

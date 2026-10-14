@@ -136,7 +136,9 @@ function updateSessionMeta(session) {
 }
 
 // Loads harnesses and models asynchronously after the browser UI has loaded.
-export async function loadAgentAsync() {
+// A failed load is retried a few times: without the list AI Review and every
+// picker stay disabled for the life of the page.
+export async function loadAgentAsync(attempt = 0) {
   try {
     const j = await api('/api/agent/harnesses');
     S.meta.agents = j.harnesses || [];
@@ -144,7 +146,9 @@ export async function loadAgentAsync() {
     S.meta.agentModel = j.model || S.meta.agentModel || '';
     S.meta.agentPinned = !!j.pinned;
     applyAgentMeta();
-  } catch {}
+  } catch {
+    if (attempt < 3) setTimeout(() => loadAgentAsync(attempt + 1), 1000 * (attempt + 1));
+  }
 }
 
 function syncBatchMeta() {
@@ -625,6 +629,7 @@ async function showPicker(session) {
     session.pickEl.innerHTML = '<div class="hint">Could not look for harnesses: ' + esc(e.message) + '</div>';
     return;
   }
+  applyAgentMeta(); // the fresh list reaches AI Review and the other pickers too
 
   const ready = list.filter(h => h.installed);
   if (!ready.length) {

@@ -45,7 +45,7 @@ type aiSuggestion struct {
 	Confidence   float64 `json:"confidence"`
 	Suggestion   string  `json:"suggestion,omitempty"` // replacement code for the anchored line(s)
 	Quote        string  `json:"quote,omitempty"`
-	Anchor       string  `json:"anchor"` // anchored, reanchored, file, summary
+	Anchor       string  `json:"anchor"` // anchored, reanchored, unverified, file, summary
 	ReportedPath string  `json:"reportedPath,omitempty"`
 	ReportedLine int     `json:"reportedLine,omitempty"`
 	ReportedSide string  `json:"reportedSide,omitempty"`
@@ -147,7 +147,8 @@ When you are done, print one JSON object between the two marker lines below, and
 Rules:
 - "path" must be one of the changed files listed above.
 - "line" is the line number in the new version of the file for side "RIGHT" (added or unchanged lines), or in the old version for side "LEFT" (deleted lines). Use the numbers from the diff hunks.
-- "quote" must be the exact text of that line; it is used to check the line number. Leave out "startLine" for a single-line comment.
+- "quote" must be the exact text of that line, without the diff's leading "+", "-" or space; it is used to check the line number. Leave out "startLine" for a single-line comment.
+- Every finding goes in "suggestions", never only in "summary". A finding about a whole file (missing tests, a design concern) leaves out "line", "startLine" and "quote".
 - "confidence" is between 0 and 1: how sure you are the comment is correct and worth posting.
 - One finding per entry in "suggestions": never put two issues in one comment.
 - An empty "suggestions" list is a valid result.
@@ -155,10 +156,16 @@ Rules:
 
 // ---------------------------------------------------------------- context
 
-// gitPRDiff returns the whole PR diff (working tree against base) with
-// renames detected and paths unquoted.
-func gitPRDiff(root, base string) (string, error) {
-	cmd := exec.Command("git", "-C", root, "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", base)
+// gitPRDiff returns the whole PR diff (base..head) with renames detected and
+// paths unquoted: the change Files changed shows and a review is posted
+// against, so the reviewer's local edits never shift the lines suggestions
+// are anchored to. Without a head commit it falls back to the working tree.
+func gitPRDiff(root, base, head string) (string, error) {
+	args := []string{"-C", root, "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", base}
+	if head != "" && exec.Command("git", "-C", root, "cat-file", "-e", head+"^{commit}").Run() == nil {
+		args = append(args, head)
+	}
+	cmd := exec.Command("git", args...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -265,7 +272,8 @@ func buildReviewDoc(c reviewContext) (doc string, diffOmitted bool) {
 func reviewPrompt(tmpdir string) string {
 	return fmt.Sprintf("You are reviewing a GitHub pull request; the current directory is a checkout of its head. "+
 		"First read %s: it holds your instructions, the pull request, its diff, and the required output format. "+
-		"Do not modify any files. When you are done, print the JSON result between the lines %s and %s.",
+		"Do not modify any files. When you are done, print the JSON result between the lines %s and %s "+
+		"(if you have a structured output tool, return the same object through it too), with every finding in its suggestions list.",
 		filepath.ToSlash(filepath.Join(tmpdir, "review.md")), reviewBeginMarker, reviewEndMarker)
 }
 
@@ -314,9 +322,11 @@ type reviewOutput struct {
 // parseReviewOutput finds the result in a harness's stdout: the last
 // marker-delimited block that parses, else the last JSON object in the text.
 // Models wrap JSON in code fences and prose, and some harnesses echo the
-// prompt (which names the markers), so every candidate is tried from the end.
+// prompt (which names the markers), so the blocks are tried from the end,
+// and the whole output only after every block: an object in trailing prose
+// (an echoed finding, a recap) must not beat the delimited result.
 func parseReviewOutput(out string) (reviewOutput, error) {
-	var cands []string
+	cands := []string{out}
 	rest := out
 	for {
 		i := strings.Index(rest, reviewBeginMarker)
@@ -332,7 +342,6 @@ func parseReviewOutput(out string) (reviewOutput, error) {
 		cands = append(cands, rest[:j])
 		rest = rest[j+len(reviewEndMarker):]
 	}
-	cands = append(cands, out)
 	for i := len(cands) - 1; i >= 0; i-- {
 		if r, ok := decodeReviewJSON(cands[i]); ok {
 			return r, nil
@@ -348,20 +357,30 @@ func parseReviewOutput(out string) (reviewOutput, error) {
 // from each "{" and ignores what follows, so prose after the JSON, braces
 // and all, does not spoil it; the scan then resumes after that value, so an
 // object nested inside a result is never taken for one.
+//
+// A result has a suggestions list. One with only a verdict is taken when no
+// object in s has a list; a summary alone is never a result, since that is
+// also what a single finding (or a wrapper around the result) looks like.
+// A result that fails to decode over an invalid escape (a regex \d, a
+// Windows path) is retried with the escape repaired.
 func decodeReviewJSON(s string) (reviewOutput, bool) {
-	var last reviewOutput
-	found := false
+	var last, lastVerdict reviewOutput
+	found, foundVerdict := false, false
 	for start := strings.Index(s, "{"); start >= 0; {
 		next := start + 1
-		var m map[string]any
-		dec := json.NewDecoder(strings.NewReader(s[start:]))
-		if err := dec.Decode(&m); err == nil {
-			normalizeReviewKeys(m)
+		m, n, ok := decodeObjectAt(s[start:])
+		if ok {
+			_, hasList := m["suggestions"]
 			if b, err := json.Marshal(m); err == nil {
 				var r reviewOutput
-				if err := json.Unmarshal(b, &r); err == nil && (r.Suggestions != nil || r.Summary != "" || r.Verdict != "") {
-					last, found = r, true
-					next = start + int(dec.InputOffset())
+				if err := json.Unmarshal(b, &r); err == nil {
+					switch {
+					case hasList:
+						last, found = r, true
+						next = start + n
+					case r.Verdict != "":
+						lastVerdict, foundVerdict = r, true
+					}
 				}
 			}
 		}
@@ -371,7 +390,83 @@ func decodeReviewJSON(s string) (reviewOutput, bool) {
 		}
 		start = next + i
 	}
+	if !found && foundVerdict {
+		return lastVerdict, true
+	}
 	return last, found
+}
+
+// decodeObjectAt decodes the JSON object at the start of s, keys normalised,
+// and reports how many bytes it took. When it fails over an invalid escape,
+// the escape is doubled and the object tried again.
+func decodeObjectAt(s string) (map[string]any, int, bool) {
+	var m map[string]any
+	dec := json.NewDecoder(strings.NewReader(s))
+	if err := dec.Decode(&m); err == nil {
+		normalizeReviewKeys(m)
+		return m, int(dec.InputOffset()), true
+	}
+	end := jsonObjectEnd(s)
+	if end < 0 {
+		return nil, 0, false
+	}
+	fixed := repairJSONEscapes(s[:end])
+	if fixed == s[:end] || json.Unmarshal([]byte(fixed), &m) != nil {
+		return nil, 0, false
+	}
+	normalizeReviewKeys(m)
+	return m, end, true
+}
+
+// jsonObjectEnd finds where the object opening s ends, by balancing braces
+// outside strings; -1 when it does not.
+func jsonObjectEnd(s string) int {
+	depth, inStr, esc := 0, false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case inStr && c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
+// repairJSONEscapes doubles each backslash in a string that does not start a
+// valid JSON escape.
+func repairJSONEscapes(s string) string {
+	var b strings.Builder
+	inStr := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			inStr = !inStr
+		}
+		if inStr && c == '\\' && i+1 < len(s) {
+			if strings.IndexByte(`"\/bfnrtu`, s[i+1]) >= 0 {
+				b.WriteByte(c)
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			b.WriteString(`\\`)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // severityRank orders suggestions by priority, most severe first. The
@@ -433,6 +528,7 @@ func buildSuggestions(pd *prDiff, out reviewOutput, runID int64, nextID func() i
 		body := strings.TrimSpace(s.Body)
 		code := strings.TrimRight(s.Suggestion, "\n")
 		if body == "" && code == "" {
+			counts["dropped"]++ // nothing to post; counted so the run says so
 			continue
 		}
 		if body == "" {
@@ -551,7 +647,7 @@ func (s *Server) startReview(focus string) (*reviewRun, error) {
 		return nil, errors.New("the PR's merge-base could not be resolved, so there is no diff to review")
 	}
 
-	diffText, err := gitPRDiff(root, base)
+	diffText, err := gitPRDiff(root, base, meta.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -796,7 +892,7 @@ func (s *Server) handleReviewRevalidate(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusConflict, "the PR's merge-base could not be resolved")
 		return
 	}
-	diffText, err := gitPRDiff(root, base)
+	diffText, err := gitPRDiff(root, base, head)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return

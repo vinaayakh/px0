@@ -105,6 +105,9 @@ initProblems();
   initPRFiles();
   initInbox();
   initGraph(); // before tabs are restored: it registers git:// tabs
+  // Harnesses and models load in the background, started early so AI Review
+  // and the pickers don't wait on tab restore (or miss out if it throws).
+  loadAgentAsync();
   document.title = S.meta.name + ' - px0';
   $('#root-name').textContent = S.meta.name;
   $('#root-name').title = S.meta.root;
@@ -201,9 +204,14 @@ initProblems();
         const m = await api('/api/meta');
         if (m.ready) {
           clearInterval(timer);
-          S.meta = m;
+          // Merge, don't replace: /api/meta has no harness list (loadAgentAsync
+          // fills it), and replacing S.meta would wipe it, disabling AI Review.
+          const { agents, agent, agentModel, agentPinned, ...rest } = m;
+          Object.assign(S.meta, rest);
           updateStatus();
-          if (!initialPath) {
+          // A PR session stays on its own tabs; the boot path never auto-opens
+          // a changed file there either.
+          if (!initialPath && !S.meta.pr) {
             hasGitChanges = await applyGitSidebarState();
             if (hasGitChanges) await selectChangedFileTab();
           }
@@ -213,7 +221,4 @@ initProblems();
       }
     }, 150);
   }
-
-  // Load harnesses and models asynchronously after the browser is loaded.
-  loadAgentAsync();
 })();

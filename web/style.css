@@ -2851,7 +2851,7 @@ body.pr-mode #view-switches { top: 39px; }
 .rv-sev-medium { color: var(--accent-fg); border-color: var(--accent); }
 .rv-sev-low { color: var(--faint); }
 .rv-cat, .rv-anchor { font-weight: 600; text-transform: none; }
-.rv-anchor-file, .rv-anchor-summary { color: var(--warn, #e5a50a); border-color: var(--warn, #e5a50a); }
+.rv-anchor-file, .rv-anchor-summary, .rv-anchor-unverified { color: var(--warn, #e5a50a); border-color: var(--warn, #e5a50a); }
 .rv-loc { font-family: var(--mono); color: var(--accent-fg); cursor: pointer; }
 .rv-loc:hover { text-decoration: underline; }
 .rv-conf { font-family: var(--mono); color: var(--faint); }
